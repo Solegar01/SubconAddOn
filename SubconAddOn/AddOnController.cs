@@ -63,8 +63,7 @@ namespace SubconAddOn
             }
         }
 
-        private static void OnFormDataEvent(ref SAPbouiCOM.BusinessObjectInfo bi,
-                                    out bool bubbleEvent)
+        private static void OnFormDataEvent(ref SAPbouiCOM.BusinessObjectInfo bi,out bool bubbleEvent)
         {
             bubbleEvent = true;
 
