@@ -8,15 +8,12 @@ namespace SubconAddOn
 {
     internal static class AddonController
     {
-        private static SAPbobsCOM.Company _diCmp;
         private static SAPbouiCOM.ProgressBar _pb;
         private static bool _userCanceled = false;
 
 
         public static void Start()
         {
-            _diCmp = (SAPbobsCOM.Company)Application.SBO_Application.Company.GetDICompany();
-
             RegisterAppEvents();
             Application.SBO_Application.StatusBar.SetText("Subcon (GI-GR auto generate) add‑on loaded.",
                 SAPbouiCOM.BoMessageTime.bmt_Short, SAPbouiCOM.BoStatusBarMessageType.smt_Success);
@@ -53,14 +50,6 @@ namespace SubconAddOn
         private static void OnMenuEvent(ref SAPbouiCOM.MenuEvent pVal, out bool bubble)
         {
             bubble = true;
-
-            if (!pVal.BeforeAction && pVal.MenuUID == "2306")   // contoh: Production Order
-            {
-                
-                //Application.SBO_Application.StatusBar.SetText("GRPO menu clicked (headless add‑on).",
-                //    SAPbouiCOM.BoMessageTime.bmt_Short, SAPbouiCOM.BoStatusBarMessageType.smt_Warning);
-                // Tambahkan logika bisnis di sini.
-            }
         }
 
         private static void OnFormDataEvent(ref SAPbouiCOM.BusinessObjectInfo bi,out bool bubbleEvent)
@@ -75,6 +64,7 @@ namespace SubconAddOn
             {
                 try
                 {
+                    Company oCompany = Services.CompanyService.GetCompany();
                     // ——— grab DocEntry ———
                     string raw = bi.ObjectKey;                                // <DocEntry>9</DocEntry>
                     int docEntry = int.Parse(
@@ -82,7 +72,7 @@ namespace SubconAddOn
                              .Groups[1].Value);
 
                     // ——— load GRPO ———
-                    var grpo = (SAPbobsCOM.Documents)_diCmp.GetBusinessObject(
+                    var grpo = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(
                                   SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
                     if (!grpo.GetByKey(docEntry))
                         throw new Exception($"GRPO {docEntry} not found.");
@@ -102,7 +92,8 @@ namespace SubconAddOn
                     if (_userCanceled) throw new OperationCanceledException();
 
                     var resGi = InventoryService.GetGoodIssueByGRPO(docEntry);
-                    if (resGi != null && InventoryService.CreateGoodsIssue(_diCmp, resGi) == 0)
+                    int giDocEntry = InventoryService.CreateGoodsIssue(resGi);
+                    if (resGi != null && giDocEntry == 0)
                         throw new Exception("Goods Issue fail to create.");
 
                     // ── LANGKAH 2: Goods Receipt ──
@@ -110,8 +101,8 @@ namespace SubconAddOn
                     _pb.Text = "Creating Goods Receipt…";
                     if (_userCanceled) throw new OperationCanceledException();
 
-                    var resGr = InventoryService.GetGoodReceiptByGRPO(docEntry);
-                    if (resGr != null && InventoryService.CreateGoodsReceipt(_diCmp, resGr) == 0)
+                    var resGr = InventoryService.GetGoodReceiptByGRPO(docEntry, giDocEntry);
+                    if (resGr != null && InventoryService.CreateGoodsReceipt(resGr) == 0)
                         throw new Exception("Goods Receipt fail to create.");
 
                     Application.SBO_Application.StatusBar.SetText(
@@ -147,10 +138,11 @@ namespace SubconAddOn
         
         private static void CleanExit()
         {
-            if (_diCmp != null && _diCmp.Connected)
+            Company oCompany = Services.CompanyService.GetCompany();
+            if (oCompany != null && oCompany.Connected)
             {
-                _diCmp.Disconnect();
-                Marshal.ReleaseComObject(_diCmp);
+                oCompany.Disconnect();
+                Marshal.ReleaseComObject(oCompany);
             }
             Application.SBO_Application.StatusBar.SetText("Subcon (GI-GR auto generate) add‑on unloaded.",
                 SAPbouiCOM.BoMessageTime.bmt_Short, SAPbouiCOM.BoStatusBarMessageType.smt_Warning);
