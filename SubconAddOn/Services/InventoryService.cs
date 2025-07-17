@@ -16,10 +16,10 @@ namespace SubconAddOn.Services
         public static int CreateGoodsIssue(GoodsIssueModel model)
         {
             if (oCompany == null || !oCompany.Connected)
-                throw new InvalidOperationException("DI Company belum terkoneksi.");
+                throw new InvalidOperationException("DI Company not connected.");
 
             if (model.Lines == null || model.Lines.Count() == 0)
-                throw new ArgumentException("Lines kosong.", nameof(model.Lines));
+                throw new ArgumentException("Empty lines.", nameof(model.Lines));
 
             Documents gi = null;
             bool ownTrans = false;
@@ -33,13 +33,13 @@ namespace SubconAddOn.Services
                 }
 
                 gi = (Documents)oCompany.GetBusinessObject(BoObjectTypes.oInventoryGenExit);
-
+                
                 // ===== HEADER =====
                 gi.DocDate = model.DocDate;
                 gi.TaxDate = gi.DocDate;
                 if (model.Lines.Any())
                 {
-                    var poDocEntry = model.Lines.ElementAt(0).PODocEntry;
+                    var poDocEntry = model.Lines.ElementAt(0).PODocEntry.ToString();
                     gi.UserFields.Fields.Item("U_T2_Ref_PO").Value = poDocEntry;
                 }
 
@@ -64,7 +64,7 @@ namespace SubconAddOn.Services
                 if (gi.Add() != 0)
                 {
                     oCompany.GetLastError(out int ec, out string em);
-                    throw new Exception($"Gagal Goods Issue [{ec}] {em}");
+                    throw new Exception($"Failed to Create Goods Issue [{ec}] {em}");
                 }
 
                 int docEntry = int.Parse(oCompany.GetNewObjectKey());
@@ -90,10 +90,10 @@ namespace SubconAddOn.Services
         public static int CreateGoodsReceipt(GoodsReceiptModel model)
         {
             if (oCompany == null || !oCompany.Connected)
-                throw new InvalidOperationException("DI Company belum terkoneksi.");
+                throw new InvalidOperationException("DI Company not connected.");
 
             if (model.Lines == null || model.Lines.Count() == 0)
-                throw new ArgumentException("Lines kosong.", nameof(model.Lines));
+                throw new ArgumentException("Empty lines.", nameof(model.Lines));
 
             Documents gr = null;
             bool ownTrans = false;
@@ -113,7 +113,7 @@ namespace SubconAddOn.Services
                 gr.TaxDate = gr.DocDate;
                 if (model.Lines.Any())
                 {
-                    var poDocEntry = model.Lines.ElementAt(0).PODocEntry;
+                    var poDocEntry = model.Lines.ElementAt(0).PODocEntry.ToString();
                     gr.UserFields.Fields.Item("U_T2_Ref_PO").Value = poDocEntry;
                 }
 
@@ -139,7 +139,7 @@ namespace SubconAddOn.Services
                 if (gr.Add() != 0)
                 {
                     oCompany.GetLastError(out int ec, out string em);
-                    throw new Exception($"Gagal Goods Receipt [{ec}] {em}");
+                    throw new Exception($"Failed to Create Goods Receipt [{ec}] {em}");
                 }
 
                 int docEntry = int.Parse(oCompany.GetNewObjectKey());

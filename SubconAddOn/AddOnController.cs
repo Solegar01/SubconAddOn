@@ -55,13 +55,13 @@ namespace SubconAddOn
         private static void OnFormDataEvent(ref SAPbouiCOM.BusinessObjectInfo bi,out bool bubbleEvent)
         {
             bubbleEvent = true;
-
             // GRPO (FormType 143) selesai disimpan
             if (bi.FormTypeEx == "143" &&
                 !bi.BeforeAction &&
                 bi.EventType == SAPbouiCOM.BoEventTypes.et_FORM_DATA_ADD &&
                 bi.ActionSuccess)
             {
+                bool success = false;
                 try
                 {
                     Company oCompany = Services.CompanyService.GetCompany();
@@ -105,10 +105,7 @@ namespace SubconAddOn
                     if (resGr != null && InventoryService.CreateGoodsReceipt(resGr) == 0)
                         throw new Exception("Goods Receipt fail to create.");
 
-                    Application.SBO_Application.StatusBar.SetText(
-                        "Auto GI & GR Success.",
-                        SAPbouiCOM.BoMessageTime.bmt_Short,
-                        SAPbouiCOM.BoStatusBarMessageType.smt_Success);
+                    success = true;
                 }
                 catch (OperationCanceledException)
                 {
@@ -132,6 +129,17 @@ namespace SubconAddOn
                         System.Runtime.InteropServices.Marshal.ReleaseComObject(_pb);
                     _pb = null;
                     _userCanceled = false;
+                    if (success)
+                    {
+                        System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+                        {
+                            System.Threading.Thread.Sleep(500); // Delay agar SAP selesai menampilkan pesan
+                            Application.SBO_Application.StatusBar.SetText(
+                                "Auto GI & GR Success.",
+                                SAPbouiCOM.BoMessageTime.bmt_Short,
+                                SAPbouiCOM.BoStatusBarMessageType.smt_Success);
+                        });
+                    }
                 }
             }
         }
