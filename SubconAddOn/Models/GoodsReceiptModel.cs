@@ -9,6 +9,7 @@ namespace SubconAddOn.Models
     public class GoodsReceiptModel
     {
         public DateTime DocDate { get; set; }
+        public int GRPODocEntry { get; set; }
         public List<GoodsReceiptLineModel> Lines { get; set; } = new List<GoodsReceiptLineModel>();
     }
 
@@ -19,7 +20,8 @@ namespace SubconAddOn.Models
         public string WarehouseCode { get; set; }   // wajib
         public string AccountCode { get; set; }   // opsional (non‑stock)
         public double UnitPrice { get; set; }
-        public long PODocEntry { get; set; }
+        public string PODocEntry { get; set; }
+        public string GRPOLineNum { get; set; }
 
     }
 }

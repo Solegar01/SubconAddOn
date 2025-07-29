@@ -2,7 +2,7 @@
 <AddOnRegData xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" SlientInstallation="No" SlientUpgrade="No" Partnernmsp="T2" SchemaVersion="3.0" Type="" MultipleVersion="false" OnDemand="" OnPremise="" ExtName="SubconAddOn" ExtVersion="1.0.0.1" Contdata="SubconAddOn" Partner="Think Tank Solusindo" DBType="MSSQL" ClientType="W">
   <Validity>
     <SBOCompatibility>
-      <Version From="100.0.0" To="100.000.260" />
+      <Version From="10.00.140" To="10.00.999" />
     </SBOCompatibility>
   </Validity>
   <Configuration>
