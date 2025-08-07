@@ -44,9 +44,6 @@
             <File FileName="SubconAddOn.exe">
               <Actions />
             </File>
-            <File FileName="SubconAddOn.exe.config">
-              <Actions />
-            </File>
             <File FileName="SubconAddOn.pdb">
               <Actions />
             </File>
@@ -79,9 +76,6 @@
               <Actions />
             </File>
             <File FileName="SubconAddOn.exe">
-              <Actions />
-            </File>
-            <File FileName="SubconAddOn.exe.config">
               <Actions />
             </File>
             <File FileName="SubconAddOn.pdb">

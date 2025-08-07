@@ -102,18 +102,10 @@
     <Compile Include="Models\GoodsReceiptModel.cs" />
     <Compile Include="Services\CompanyService.cs" />
     <Compile Include="Services\InventoryService.cs" />
-    <None Include="App.config" />
-    <None Include="Form1.b1f">
-      <FormCategory>UserForm</FormCategory>
-    </None>
+    <Compile Include="Services\NamedMutex.cs" />
     <Compile Include="AddOnController.cs" />
-    <Compile Include="Form1.b1f.cs">
-      <DependentUpon>Form1.b1f</DependentUpon>
-    </Compile>
     <Compile Include="Program.cs" />
-    <Compile Include="Menu.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
-    <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
     <BootstrapperPackage Include=".NETFramework,Version=v4.8">
