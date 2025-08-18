@@ -98,11 +98,11 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Helpers\SqlLockHelper.cs" />
     <Compile Include="Models\GoodsIssueModel.cs" />
     <Compile Include="Models\GoodsReceiptModel.cs" />
     <Compile Include="Services\CompanyService.cs" />
     <Compile Include="Services\InventoryService.cs" />
-    <Compile Include="Services\NamedMutex.cs" />
     <Compile Include="AddOnController.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

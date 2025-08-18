@@ -10,19 +10,17 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Text.RegularExpressions;
+using SubconAddOn.Helpers;
 
 namespace SubconAddOn
 {
     internal static class AddonController
     {
-        private static SAPbouiCOM.ProgressBar _pb;
-        private static bool _userCanceled = false;
-        private static Company oCompany = null;
-        private static Mutex mutex = new Mutex(false, "Global\\SAPB1_GRPO_Mutex");
-        private static bool mutexAcquired = false; // status lokal, karena FormDataEvent tidak tahu siapa yang ambil mutex
         private static bool _isCancelTrans = false;
         private static int _docEntry = 0;
-        
+        private static SqlLockHelper _lockHelper;
+        private const string LOCK_KEY = "GRPO_SUBCON";
+
         public static void Start()
         {
             RegisterAppEvents();
@@ -36,8 +34,7 @@ namespace SubconAddOn
             Application.SBO_Application.MenuEvent += SBO_Application_MenuEvent;
             Application.SBO_Application.FormDataEvent += SBO_Application_FormDataEvent;
             Application.SBO_Application.ItemEvent += SBO_Application_ItemEvent;
-            Application.SBO_Application.ProgressBarEvent += new SAPbouiCOM._IApplicationEvents_ProgressBarEventEventHandler(OnProgressBarEvent);
-            oCompany = Services.CompanyService.GetCompany();
+            //oCompany = Services.CompanyService.GetCompany();
         }
 
         private static void RegisterAppEvents()
@@ -52,14 +49,6 @@ namespace SubconAddOn
                 }
             };
         }
-        
-        private static void OnProgressBarEvent(ref SAPbouiCOM.ProgressBarEvent pVal,out bool BubbleEvent)
-        {
-            BubbleEvent = true;
-            if (pVal.EventType == SAPbouiCOM.BoProgressBarEventTypes.pbet_ProgressBarStopped &&
-                pVal.BeforeAction)
-                _userCanceled = true;
-        }
 
         private static void SBO_Application_ItemEvent(string FormUID, ref SAPbouiCOM.ItemEvent pVal, out bool BubbleEvent)
         {
@@ -69,7 +58,25 @@ namespace SubconAddOn
             {
                 if (pVal.EventType == SAPbouiCOM.BoEventTypes.et_FORM_CLOSE && !pVal.BeforeAction)
                 {
-                    ReleaseMutexIfAcquired();
+                    if (_lockHelper != null)
+                    {
+                        try
+                        {
+                            _lockHelper.ReleaseLock();
+                        }
+                        catch (Exception ex)
+                        {
+                            Application.SBO_Application.StatusBar.SetText(
+                                $"Error releasing lock: {ex.Message}",
+                                SAPbouiCOM.BoMessageTime.bmt_Short,
+                                SAPbouiCOM.BoStatusBarMessageType.smt_Error
+                            );
+                        }
+                        finally
+                        {
+                            _lockHelper = null;
+                        }
+                    }
                 }
             }
         }
@@ -83,8 +90,33 @@ namespace SubconAddOn
 
                 string poType = ds.GetValue("U_T2_PO_TYPE", 0).Trim();
                 string canceled = ds.GetValue("CANCELED", 0).Trim();
+                
+                try
+                {
+                    var oCompany = (SAPbobsCOM.Company)Application.SBO_Application.Company.GetDICompany();
+                    
+                    _lockHelper = new SqlLockHelper(oCompany);
 
-                if (!TryAcquireMutex(ref bubbleEvent)) return;
+                    bool gotLock = _lockHelper.AcquireLockAsync(LOCK_KEY, Environment.UserName).Result; // blocking here is fine
+                    if (!gotLock)
+                    {
+                        Application.SBO_Application.StatusBar.SetText(
+                            "Another user is processing subcontract GRPO. Please wait.",
+                            SAPbouiCOM.BoMessageTime.bmt_Short,
+                            SAPbouiCOM.BoStatusBarMessageType.smt_Warning
+                        );
+                        bubbleEvent = false;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Application.SBO_Application.StatusBar.SetText(
+                        $"Error acquiring lock: {ex.Message}",
+                        SAPbouiCOM.BoMessageTime.bmt_Short,
+                        SAPbouiCOM.BoStatusBarMessageType.smt_Error
+                    );
+                    bubbleEvent = false;
+                }
 
                 if (canceled == "N" && poType == "4")
                 {
@@ -100,112 +132,132 @@ namespace SubconAddOn
             {
                 bubbleEvent = false;
                 ShowStatusDelayed(ex.Message, SAPbouiCOM.BoStatusBarMessageType.smt_Error);
+                
+                if (_lockHelper != null)
+                {
+                    try
+                    {
+                        _lockHelper.ReleaseLock();
+                    }
+                    catch (Exception exc)
+                    {
+                        Application.SBO_Application.StatusBar.SetText(
+                            $"Error releasing lock: {exc.Message}",
+                            SAPbouiCOM.BoMessageTime.bmt_Short,
+                            SAPbouiCOM.BoStatusBarMessageType.smt_Error
+                        );
+                    }
+                    finally
+                    {
+                        _lockHelper = null;
+                    }
+                }
+            }
+        }
+        
+        private static void ValidateBomStock(SAPbouiCOM.Form form)
+        {
+            Company oCompany = Services.CompanyService.GetCompany();
+            SAPbouiCOM.ProgressBar progressBar = null;
+            
+            try
+            {
+                progressBar = Application.SBO_Application.StatusBar.CreateProgressBar("Validating BOM stock...", 100, false);
+                progressBar.Text = "Validating BOM stock...";
+                System.Threading.Thread.Sleep(1000); // Delay 2 seconds
 
-                ReleaseMutexIfAcquired();
+                var matrix = (SAPbouiCOM.Matrix)form.Items.Item("38").Specific;
+                int rowCount = matrix.RowCount;
+
+                for (int i = 1; i <= rowCount; i++)
+                {
+                    progressBar.Value = (int)((i / (double)rowCount) * 100);
+
+                    string itemCode = ((SAPbouiCOM.EditText)matrix.Columns.Item("1").Cells.Item(i).Specific).Value;
+                    if (InventoryService.IsBom(oCompany, itemCode))
+                    {
+                        string qtyStr = ((SAPbouiCOM.EditText)matrix.Columns.Item("11").Cells.Item(i).Specific).Value;
+                        if (double.TryParse(qtyStr, NumberStyles.Any, CultureInfo.InvariantCulture, out double qty))
+                        {
+                            InventoryService.IsStockAvailable(oCompany, itemCode, qty);
+                        }
+                    }
+                }
+            }catch(Exception e)
+            {
+                throw e;
             }
             finally
             {
-                CleanupProgressBar();
-                _userCanceled = false;
-            }
-        }
-
-        private static bool TryAcquireMutex(ref bool bubbleEvent)
-        {
-            try { mutex.ReleaseMutex(); mutexAcquired = false; } catch { }
-
-            if (mutex.WaitOne(0))
-            {
-                mutexAcquired = true;
-                return true;
-            }
-            else
-            {
-                CleanupProgressBar();
-                ShowStatusDelayed("Another GRPO process is running. Please wait...", SAPbouiCOM.BoStatusBarMessageType.smt_Error);
-                bubbleEvent = false;
-                return false;
-            }
-        }
-
-        private static void ValidateBomStock(SAPbouiCOM.Form form)
-        {
-            _pb = Application.SBO_Application.StatusBar.CreateProgressBar("Validating BOM stock...", 100, false);
-            _pb.Text = "Validating BOM stock...";
-
-            var matrix = (SAPbouiCOM.Matrix)form.Items.Item("38").Specific;
-            int rowCount = matrix.RowCount;
-
-            for (int i = 1; i <= rowCount; i++)
-            {
-                _pb.Value = (int)((i / (double)rowCount) * 100);
-
-                string itemCode = ((SAPbouiCOM.EditText)matrix.Columns.Item("1").Cells.Item(i).Specific).Value;
-                if (InventoryService.IsBom(oCompany, itemCode))
-                {
-                    string qtyStr = ((SAPbouiCOM.EditText)matrix.Columns.Item("11").Cells.Item(i).Specific).Value;
-                    if (double.TryParse(qtyStr, NumberStyles.Any, CultureInfo.InvariantCulture, out double qty))
-                    {
-                        InventoryService.IsStockAvailable(oCompany, itemCode, qty);
-                    }
-                }
+                CleanupProgressBar(progressBar);
             }
         }
 
         private static void ValidateCancellationDocuments()
         {
-            _pb = Application.SBO_Application.StatusBar.CreateProgressBar("Validating cancellation document…", 3, false);
-            _pb.Text = "Validating cancellation document…";
-
-            if (_isCancelTrans && _docEntry != 0)
+            SAPbouiCOM.ProgressBar progressBar = null;
+            Company oCompany = null;
+            try
             {
-                try
+                if (_isCancelTrans && _docEntry != 0)
                 {
+                    progressBar = Application.SBO_Application.StatusBar.CreateProgressBar("Validating cancellation document…", 3, false);
+                    progressBar.Text = "Validating cancellation document…";
                     if (oCompany == null) oCompany = Services.CompanyService.GetCompany();
                     if (!oCompany.InTransaction) oCompany.StartTransaction();
 
-                    _pb.Text = "Validating Stock Cancellation...";
-                    _pb.Value = 1;
+                    progressBar.Text = "Validating Stock Cancellation...";
+                    progressBar.Value = 1;
                     InventoryService.IsStockAvailableCancel(oCompany, _docEntry);
 
-                    _pb.Text = "Validating JE Cancellation...";
-                    _pb.Value = 2;
+                    progressBar.Text = "Validating JE Cancellation...";
+                    progressBar.Value = 2;
                     InventoryService.CancelJEByGRPOTemp(oCompany, _docEntry);
 
-                    _pb.Text = "Validating GI & GR Cancellation...";
-                    _pb.Value = 3;
+                    progressBar.Text = "Validating GI & GR Cancellation...";
+                    progressBar.Value = 3;
                     InventoryService.CancelGIGRByGRPOTemp(oCompany, _docEntry);
                 }
-                catch
-                {
-                    ReleaseMutexIfAcquired();
-                    throw;
-                }
-                finally
-                {
-                    if (oCompany.InTransaction)
-                        oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
-                }
             }
-        }
-
-        private static void CleanupProgressBar()
-        {
-            _pb?.Stop();
-            if (_pb != null)
-                System.Runtime.InteropServices.Marshal.ReleaseComObject(_pb);
-            _pb = null;
-        }
-
-        private static void ReleaseMutexIfAcquired()
-        {
-            if (mutexAcquired)
+            catch
             {
-                try { mutex.ReleaseMutex(); } catch { }
-                mutexAcquired = false;
+                if (_lockHelper != null)
+                {
+                    try
+                    {
+                        _lockHelper.ReleaseLock();
+                    }
+                    catch (Exception ex)
+                    {
+                        Application.SBO_Application.StatusBar.SetText(
+                            $"Error releasing lock: {ex.Message}",
+                            SAPbouiCOM.BoMessageTime.bmt_Short,
+                            SAPbouiCOM.BoStatusBarMessageType.smt_Error
+                        );
+                    }
+                    finally
+                    {
+                        _lockHelper = null;
+                    }
+                }
+                throw;
+            }
+            finally
+            {
+                if (oCompany.InTransaction)
+                    oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
+                CleanupProgressBar(progressBar);
             }
         }
 
+        private static void CleanupProgressBar(SAPbouiCOM.ProgressBar progressBar)
+        {
+            progressBar?.Stop();
+            if (progressBar != null)
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(progressBar);
+            progressBar = null;
+        }
+        
         private static void SBO_Application_FormDataEvent(ref SAPbouiCOM.BusinessObjectInfo bi, out bool bubbleEvent)
         {
             bubbleEvent = true;
@@ -215,22 +267,24 @@ namespace SubconAddOn
                 HandleAddOrCancelPressed(formUID, ref bubbleEvent);
             }
 
-            if (bi.FormTypeEx == "143" && !bi.BeforeAction && bi.EventType == SAPbouiCOM.BoEventTypes.et_FORM_DATA_ADD && bi.ActionSuccess && mutexAcquired)
+            if (bi.FormTypeEx == "143" && !bi.BeforeAction && bi.EventType == SAPbouiCOM.BoEventTypes.et_FORM_DATA_ADD && bi.ActionSuccess)
             {
                 bool success = false;
                 bool isCancel = false;
+                bool isCreate = false;
                 int docEntry = 0;
                 int docNum = 0;
+                Company oCompany = Services.CompanyService.GetCompany();
 
                 try
                 {
-                    EnsureCompanyConnected();
+                    //EnsureCompanyConnected();
 
                     if (!oCompany.InTransaction)
                         oCompany.StartTransaction();
 
                     docEntry = ExtractDocEntry(bi.ObjectKey);
-                    var grpo = LoadGRPO(docEntry);
+                    var grpo = LoadGRPO(oCompany,docEntry);
                     docNum = grpo.DocNum;
 
                     string poType = grpo.UserFields.Fields.Item("U_T2_PO_TYPE").Value?.ToString()?.Trim();
@@ -238,11 +292,12 @@ namespace SubconAddOn
                     if (poType == "4" && grpo.Cancelled == SAPbobsCOM.BoYesNoEnum.tYES)
                     {
                         isCancel = true;
-                        ProcessCancellation(docEntry);
+                        ProcessCancellation(oCompany ,docEntry);
                     }
                     else if (poType == "4" && grpo.Cancelled == SAPbobsCOM.BoYesNoEnum.tNO)
                     {
-                        ProcessAutoGeneration(docEntry);
+                        isCreate = true;
+                        ProcessAutoGeneration(oCompany, docEntry);
                     }
 
                     success = true;
@@ -251,25 +306,43 @@ namespace SubconAddOn
                 }
                 catch (OperationCanceledException)
                 {
-                    RollbackTransaction();
+                    if (oCompany?.InTransaction == true)
+                        oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
                     ShowStatusDelayed("Process cancelled by user.", SAPbouiCOM.BoStatusBarMessageType.smt_Warning);
                 }
                 catch (Exception ex)
                 {
-                    RollbackTransaction();
-                    HandleAutoGenError(ex, docEntry, docNum, isCancel);
+                    if (oCompany?.InTransaction == true)
+                        oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
+                    HandleAutoGenError(oCompany, ex, docEntry, docNum, isCancel);
                 }
                 finally
                 {
-                    CleanupProgressBar();
-
-                    if (success)
+                    if (success && (isCreate || isCancel))
                     {
-                        var message = isCancel ? "GI and GR were successfully canceled." : "Auto-generation of GI and GR completed successfully.";
+                        var message = (isCancel) ? "GI and GR were successfully canceled." : "Auto-generation of GI and GR completed successfully.";
                         ShowStatusDelayed(message, SAPbouiCOM.BoStatusBarMessageType.smt_Success);
                     }
-
-                    ReleaseMutexIfAcquired();
+                    
+                    if (_lockHelper != null)
+                    {
+                        try
+                        {
+                            _lockHelper.ReleaseLock();
+                        }
+                        catch (Exception ex)
+                        {
+                            Application.SBO_Application.StatusBar.SetText(
+                                $"Error releasing lock: {ex.Message}",
+                                SAPbouiCOM.BoMessageTime.bmt_Short,
+                                SAPbouiCOM.BoStatusBarMessageType.smt_Error
+                            );
+                        }
+                        finally
+                        {
+                            _lockHelper = null;
+                        }
+                    }
                     _docEntry = 0;
                     _isCancelTrans = false;
                 }
@@ -282,7 +355,7 @@ namespace SubconAddOn
             return int.Parse(match.Groups[1].Value);
         }
 
-        private static SAPbobsCOM.Documents LoadGRPO(int docEntry)
+        private static SAPbobsCOM.Documents LoadGRPO(Company oCompany, int docEntry)
         {
             var grpo = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
             if (!grpo.GetByKey(docEntry))
@@ -290,70 +363,90 @@ namespace SubconAddOn
             return grpo;
         }
 
-        private static void ProcessCancellation(int docEntry)
+        private static void ProcessCancellation(Company oCompany, int docEntry)
         {
-            int originEntry = InventoryService.GetOriginGRPOEntry(oCompany, docEntry);
-            if (originEntry == 0)
-                throw new Exception("Origin GRPO not found.");
+            SAPbouiCOM.ProgressBar progressBar = null;
+            progressBar = Application.SBO_Application.StatusBar.CreateProgressBar("Create cancellation document…", 2, false);
+            try
+            {
+                progressBar.Value = 1;
+                progressBar.Text = "Creating cancellation JE GRPO Subcontract…";
+                int originEntry = InventoryService.GetOriginGRPOEntry(oCompany, docEntry);
+                if (originEntry == 0)
+                    throw new Exception("Origin GRPO not found.");
+                
+                InventoryService.DeleteAllRefGRPO(oCompany, docEntry);
+                InventoryService.CancelJEByGRPO(oCompany, originEntry, docEntry);
 
-            _pb = Application.SBO_Application.StatusBar.CreateProgressBar("Create cancellation document…", 2, false);
-            _pb.Value = 1;
-            _pb.Text = "Creating cancellation JE GRPO Subcontract…";
+                progressBar.Value = 2;
+                progressBar.Text = "Creating cancellation GI & GR…";
+                
+                InventoryService.CancelGIGRByGRPO(oCompany, originEntry, docEntry);
+            }
+            catch (Exception)
+            {
 
-            if (_userCanceled) throw new OperationCanceledException();
-
-            InventoryService.DeleteAllRefGRPO(oCompany, docEntry);
-            InventoryService.CancelJEByGRPO(oCompany, originEntry, docEntry);
-
-            _pb.Value = 2;
-            _pb.Text = "Creating cancellation GI & GR…";
-
-            if (_userCanceled) throw new OperationCanceledException();
-            InventoryService.CancelGIGRByGRPO(oCompany, originEntry, docEntry);
+                throw;
+            }
+            finally
+            {
+                CleanupProgressBar(progressBar);
+            }
         }
 
-        private static void ProcessAutoGeneration(int docEntry)
+        private static void ProcessAutoGeneration(Company oCompany, int docEntry)
         {
-            _pb = Application.SBO_Application.StatusBar.CreateProgressBar("Auto‑generate GI & GR…", 4, false);
+            SAPbouiCOM.ProgressBar progressBar = null;
+            progressBar = Application.SBO_Application.StatusBar.CreateProgressBar("Auto‑generate GI & GR…", 4, false);
+            try
+            {
+                // Step 1: JE
+                progressBar.Value = 1;
+                progressBar.Text = "Creating JE Subcon…";
+                int entryJe = InventoryService.CreateJESubcon(oCompany, docEntry);
+                if (entryJe == 0) throw new Exception("JE Subcon fail to create.");
 
-            // Step 1: JE
-            _pb.Value = 1;
-            _pb.Text = "Creating JE Subcon…";
-            if (_userCanceled) throw new OperationCanceledException();
-            int entryJe = InventoryService.CreateJESubcon(oCompany, docEntry);
-            if (entryJe == 0) throw new Exception("JE Subcon fail to create.");
+                // Step 2: Link JE
+                progressBar.Value = 2;
+                progressBar.Text = "Linking JE Subcon to GRPO…";
+                
+                if (!InventoryService.LinkJEToGRPO(oCompany, docEntry, entryJe))
+                    throw new Exception("JE Subcon fail to link with GRPO.");
 
-            // Step 2: Link JE
-            _pb.Value = 2;
-            _pb.Text = "Linking JE Subcon to GRPO…";
-            if (_userCanceled) throw new OperationCanceledException();
-            if (!InventoryService.LinkJEToGRPO(oCompany, docEntry, entryJe))
-                throw new Exception("JE Subcon fail to link with GRPO.");
+                // Step 3: Goods Issue
+                progressBar.Value = 3;
+                progressBar.Text = "Creating Goods Issue…";
+                
+                var resGi = InventoryService.GetGoodIssueByGRPO(oCompany, docEntry);
+                int giDocEntry = InventoryService.CreateGoodsIssue(oCompany, resGi);
+                if (resGi != null && giDocEntry == 0)
+                    throw new Exception("Goods Issue fail to create.");
+                if (!InventoryService.LinkGIToGRPO(oCompany, docEntry, giDocEntry))
+                    throw new Exception("Goods Issue fail to link with GRPO.");
 
-            // Step 3: Goods Issue
-            _pb.Value = 3;
-            _pb.Text = "Creating Goods Issue…";
-            if (_userCanceled) throw new OperationCanceledException();
-            var resGi = InventoryService.GetGoodIssueByGRPO(oCompany, docEntry);
-            int giDocEntry = InventoryService.CreateGoodsIssue(oCompany, resGi);
-            if (resGi != null && giDocEntry == 0)
-                throw new Exception("Goods Issue fail to create.");
-            if (!InventoryService.LinkGIToGRPO(oCompany, docEntry, giDocEntry))
-                throw new Exception("Goods Issue fail to link with GRPO.");
+                // Step 4: Goods Receipt
+                progressBar.Value = 4;
+                progressBar.Text = "Creating Goods Receipt…";
+                
+                var resGr = InventoryService.GetGoodReceiptByGRPO(oCompany, docEntry, giDocEntry);
+                int grDocEntry = InventoryService.CreateGoodsReceipt(oCompany, resGr);
+                if (resGr != null && grDocEntry == 0)
+                    throw new Exception("Goods Receipt fail to create.");
+                if (!InventoryService.LinkGRToGRPO(oCompany, docEntry, grDocEntry))
+                    throw new Exception("Goods Receipt fail to link with GRPO.");
+            }
+            catch (Exception)
+            {
 
-            // Step 4: Goods Receipt
-            _pb.Value = 4;
-            _pb.Text = "Creating Goods Receipt…";
-            if (_userCanceled) throw new OperationCanceledException();
-            var resGr = InventoryService.GetGoodReceiptByGRPO(oCompany, docEntry, giDocEntry);
-            int grDocEntry = InventoryService.CreateGoodsReceipt(oCompany, resGr);
-            if (resGr != null && grDocEntry == 0)
-                throw new Exception("Goods Receipt fail to create.");
-            if (!InventoryService.LinkGRToGRPO(oCompany, docEntry, grDocEntry))
-                throw new Exception("Goods Receipt fail to link with GRPO.");
+                throw;
+            }
+            finally
+            {
+                CleanupProgressBar(progressBar);
+            }
         }
 
-        private static void HandleAutoGenError(Exception ex, int docEntry, int docNum, bool isCancel)
+        private static void HandleAutoGenError(Company oCompany, Exception ex, int docEntry, int docNum, bool isCancel)
         {
             ShowStatusDelayed("Auto-generation of GI and GR failed: " + ex.Message,
                 SAPbouiCOM.BoStatusBarMessageType.smt_Error);
@@ -381,17 +474,17 @@ namespace SubconAddOn
             }, null, 1000, System.Threading.Timeout.Infinite);
         }
 
-        private static void EnsureCompanyConnected()
-        {
-            if (oCompany == null || !oCompany.Connected)
-                oCompany = Services.CompanyService.GetCompany();
-        }
+        //private static void EnsureCompanyConnected()
+        //{
+        //    if (oCompany == null || !oCompany.Connected)
+        //        oCompany = Services.CompanyService.GetCompany();
+        //}
 
-        private static void RollbackTransaction()
-        {
-            if (oCompany?.InTransaction == true)
-                oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
-        }
+        //private static void RollbackTransaction()
+        //{
+        //    if (oCompany?.InTransaction == true)
+        //        oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
+        //}
 
         private static void SBO_Application_MenuEvent(ref SAPbouiCOM.MenuEvent pVal, out bool BubbleEvent)
         {
@@ -419,11 +512,11 @@ namespace SubconAddOn
         private static void CleanExit()
         {
             //oCompany = Services.CompanyService.GetCompany();
-            if (oCompany != null && oCompany.Connected)
-            {
-                oCompany.Disconnect();
-                Marshal.ReleaseComObject(oCompany);
-            }
+            //if (oCompany != null && oCompany.Connected)
+            //{
+            //    oCompany.Disconnect();
+            //    Marshal.ReleaseComObject(oCompany);
+            //}
             Application.SBO_Application.StatusBar.SetText(
             "Subcon Add-on (GI-GR auto-generation) has been unloaded.",
             SAPbouiCOM.BoMessageTime.bmt_Short,

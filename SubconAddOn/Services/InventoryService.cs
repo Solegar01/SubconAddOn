@@ -12,6 +12,10 @@ namespace SubconAddOn.Services
     public static class InventoryService
     {
         //private static readonly Company oCompany = CompanyService.GetCompany();
+        private static readonly string nonStoctActSql = @"SELECT TOP 1 T0.DfltExpn, T0.WipAcct, T0.WipVarAcct
+                FROM OGAR T0
+                INNER JOIN OITB T1 ON T1.ItmsGrpCod =  T0.ItmsGrpCod
+                WHERE T0.UDF1 = '4' AND T1.ItmsGrpNam = 'NONSTOCK SINGLE PART'";
 
         public static int CreateGoodsIssue(Company oCompany, GoodsIssueModel model)
         {
@@ -494,11 +498,12 @@ namespace SubconAddOn.Services
                 }
 
                 // Get account setup
-                string sql = @"
-                SELECT TOP 1 T0.DfltExpn, T0.WipAcct, T0.WipVarAcct
-                FROM OGAR T0
-                WHERE T0.UDF1 = '4' AND T0.ItmsGrpCod = 122";
-                rs.DoQuery(sql);
+                //string sql = @"
+                //SELECT TOP 1 T0.DfltExpn, T0.WipAcct, T0.WipVarAcct
+                //FROM OGAR T0
+                //WHERE T0.UDF1 = '4' AND T0.ItmsGrpCod = 122";
+
+                rs.DoQuery(nonStoctActSql);
 
                 if (rs.EoF)
                     throw new Exception("WIP/Expense account config not found.");
@@ -1015,10 +1020,10 @@ namespace SubconAddOn.Services
             int docEntry = 0;
             Recordset rs = null;
             Recordset rsDoc = null;
-            string sql = @"
-                SELECT TOP 1 T0.DfltExpn, T0.WipAcct, T0.WipVarAcct
-                FROM OGAR T0
-                WHERE T0.UDF1 = '4' AND T0.ItmsGrpCod = 122";
+            //string sql = @"
+            //    SELECT TOP 1 T0.DfltExpn, T0.WipAcct, T0.WipVarAcct
+            //    FROM OGAR T0
+            //    WHERE T0.UDF1 = '4' AND T0.ItmsGrpCod = 122";
             JournalEntries oJE = (JournalEntries)oCompany.GetBusinessObject(BoObjectTypes.oJournalEntries);
             SAPbobsCOM.JournalEntries giJE = (SAPbobsCOM.JournalEntries)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oJournalEntries);
             SAPbobsCOM.JournalEntries grJE = (SAPbobsCOM.JournalEntries)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oJournalEntries);
@@ -1028,7 +1033,7 @@ namespace SubconAddOn.Services
             try
             {
                 rs = (SAPbobsCOM.Recordset)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.BoRecordset);
-                rs.DoQuery(sql);
+                rs.DoQuery(nonStoctActSql);
 
                 if (rs.EoF)
                     throw new Exception("WIP/Expense account config not found.");
@@ -1461,10 +1466,10 @@ namespace SubconAddOn.Services
             int docEntry = 0;
             Recordset rs = null;
             Recordset rsDoc = null;
-            string sql = @"
-                SELECT TOP 1 T0.DfltExpn, T0.WipAcct, T0.WipVarAcct
-                FROM OGAR T0
-                WHERE T0.UDF1 = '4' AND T0.ItmsGrpCod = 122";
+            //string sql = @"
+            //    SELECT TOP 1 T0.DfltExpn, T0.WipAcct, T0.WipVarAcct
+            //    FROM OGAR T0
+            //    WHERE T0.UDF1 = '4' AND T0.ItmsGrpCod = 122";
             JournalEntries oJE = (JournalEntries)oCompany.GetBusinessObject(BoObjectTypes.oJournalEntries);
             SAPbobsCOM.JournalEntries giJE = (SAPbobsCOM.JournalEntries)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oJournalEntries);
             SAPbobsCOM.JournalEntries grJE = (SAPbobsCOM.JournalEntries)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oJournalEntries);
@@ -1472,7 +1477,7 @@ namespace SubconAddOn.Services
             try
             {
                 rs = (SAPbobsCOM.Recordset)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.BoRecordset);
-                rs.DoQuery(sql);
+                rs.DoQuery(nonStoctActSql);
 
                 if (rs.EoF)
                     throw new Exception("WIP/Expense account config not found.");
