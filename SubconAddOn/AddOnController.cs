@@ -101,7 +101,7 @@ namespace SubconAddOn
                     if (!gotLock)
                     {
                         Application.SBO_Application.StatusBar.SetText(
-                            "Another user is processing subcontract GRPO. Please wait.",
+                            "Another user is processing subcontract Goods Receipt PO. Please wait.",
                             SAPbouiCOM.BoMessageTime.bmt_Short,
                             SAPbouiCOM.BoStatusBarMessageType.smt_Warning
                         );
@@ -210,11 +210,11 @@ namespace SubconAddOn
                     progressBar.Value = 1;
                     InventoryService.IsStockAvailableCancel(oCompany, _docEntry);
 
-                    progressBar.Text = "Validating JE Cancellation...";
+                    progressBar.Text = "Validating Jountry Entry Cancellation...";
                     progressBar.Value = 2;
                     InventoryService.CancelJEByGRPOTemp(oCompany, _docEntry);
 
-                    progressBar.Text = "Validating GI & GR Cancellation...";
+                    progressBar.Text = "Validating Goods Issue & Goods Receipt Cancellation...";
                     progressBar.Value = 3;
                     InventoryService.CancelGIGRByGRPOTemp(oCompany, _docEntry);
                 }
@@ -320,7 +320,7 @@ namespace SubconAddOn
                 {
                     if (success && (isCreate || isCancel))
                     {
-                        var message = (isCancel) ? "GI and GR were successfully canceled." : "Auto-generation of GI and GR completed successfully.";
+                        var message = (isCancel) ? "Goods Issue and Goods Receipt were successfully canceled." : "Auto-generation of Goods Issue and Goods Receipt completed successfully.";
                         ShowStatusDelayed(message, SAPbouiCOM.BoStatusBarMessageType.smt_Success);
                     }
                     
@@ -359,7 +359,7 @@ namespace SubconAddOn
         {
             var grpo = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
             if (!grpo.GetByKey(docEntry))
-                throw new Exception($"GRPO {docEntry} not found.");
+                throw new Exception($"Goods Receipt PO {docEntry} not found.");
             return grpo;
         }
 
@@ -370,16 +370,16 @@ namespace SubconAddOn
             try
             {
                 progressBar.Value = 1;
-                progressBar.Text = "Creating cancellation JE GRPO Subcontract…";
+                progressBar.Text = "Creating cancellation Journal Entry Goods Receipt PO Subcontract…";
                 int originEntry = InventoryService.GetOriginGRPOEntry(oCompany, docEntry);
                 if (originEntry == 0)
-                    throw new Exception("Origin GRPO not found.");
+                    throw new Exception("Origin Goods Receipt PO not found.");
                 
                 InventoryService.DeleteAllRefGRPO(oCompany, docEntry);
                 InventoryService.CancelJEByGRPO(oCompany, originEntry, docEntry);
 
                 progressBar.Value = 2;
-                progressBar.Text = "Creating cancellation GI & GR…";
+                progressBar.Text = "Creating cancellation Goods Issue & Goods Receipt…";
                 
                 InventoryService.CancelGIGRByGRPO(oCompany, originEntry, docEntry);
             }
@@ -397,21 +397,21 @@ namespace SubconAddOn
         private static void ProcessAutoGeneration(Company oCompany, int docEntry)
         {
             SAPbouiCOM.ProgressBar progressBar = null;
-            progressBar = Application.SBO_Application.StatusBar.CreateProgressBar("Auto‑generate GI & GR…", 4, false);
+            progressBar = Application.SBO_Application.StatusBar.CreateProgressBar("Auto‑generate Goods Issue & Goods Receipt…", 4, false);
             try
             {
                 // Step 1: JE
                 progressBar.Value = 1;
-                progressBar.Text = "Creating JE Subcon…";
+                progressBar.Text = "Creating Journal Entry Subcon…";
                 int entryJe = InventoryService.CreateJESubcon(oCompany, docEntry);
-                if (entryJe == 0) throw new Exception("JE Subcon fail to create.");
+                if (entryJe == 0) throw new Exception("Journal Entry Subcon fail to create.");
 
                 // Step 2: Link JE
                 progressBar.Value = 2;
-                progressBar.Text = "Linking JE Subcon to GRPO…";
+                progressBar.Text = "Linking Journal Entry Subcon to Goods Receipt PO…";
                 
                 if (!InventoryService.LinkJEToGRPO(oCompany, docEntry, entryJe))
-                    throw new Exception("JE Subcon fail to link with GRPO.");
+                    throw new Exception("Journal Entry Subcon fail to link with Goods Receipt PO.");
 
                 // Step 3: Goods Issue
                 progressBar.Value = 3;
@@ -422,7 +422,7 @@ namespace SubconAddOn
                 if (resGi != null && giDocEntry == 0)
                     throw new Exception("Goods Issue fail to create.");
                 if (!InventoryService.LinkGIToGRPO(oCompany, docEntry, giDocEntry))
-                    throw new Exception("Goods Issue fail to link with GRPO.");
+                    throw new Exception("Goods Issue fail to link with Goods Receipt PO.");
 
                 // Step 4: Goods Receipt
                 progressBar.Value = 4;
@@ -433,7 +433,7 @@ namespace SubconAddOn
                 if (resGr != null && grDocEntry == 0)
                     throw new Exception("Goods Receipt fail to create.");
                 if (!InventoryService.LinkGRToGRPO(oCompany, docEntry, grDocEntry))
-                    throw new Exception("Goods Receipt fail to link with GRPO.");
+                    throw new Exception("Goods Receipt fail to link with Goods Receipt PO.");
             }
             catch (Exception)
             {
@@ -448,20 +448,20 @@ namespace SubconAddOn
 
         private static void HandleAutoGenError(Company oCompany, Exception ex, int docEntry, int docNum, bool isCancel)
         {
-            ShowStatusDelayed("Auto-generation of GI and GR failed: " + ex.Message,
+            ShowStatusDelayed("Auto-generation of Goods Issue and Goods Receipt failed: " + ex.Message,
                 SAPbouiCOM.BoStatusBarMessageType.smt_Error);
 
             if (!isCancel)
             {
                 InventoryService.CancelGoodsReceiptPO(oCompany, docEntry);
                 Application.SBO_Application.MessageBox(
-                    $"Auto-generation of GI and GR failed.\n\nError:\n{ex.Message}\n\nThe GRPO ({docNum}) has been canceled.",
+                    $"Auto-generation of Goods Issue and Goods Receipt failed.\n\nError:\n{ex.Message}\n\nThe Goods Receipt PO ({docNum}) has been canceled.",
                     1, "OK", "", "");
             }
             else
             {
                 Application.SBO_Application.MessageBox(
-                    "Auto-cancellation of GI and GR failed.\nPlease cancel them manually.",
+                    "Auto-cancellation of Goods Issue and Goods Receipt failed.\nPlease cancel them manually.",
                     1, "OK", "", "");
             }
         }
@@ -518,7 +518,7 @@ namespace SubconAddOn
             //    Marshal.ReleaseComObject(oCompany);
             //}
             Application.SBO_Application.StatusBar.SetText(
-            "Subcon Add-on (GI-GR auto-generation) has been unloaded.",
+            "Subcon Add-on (Goods Issue - Goods Receipt auto-generation) has been unloaded.",
             SAPbouiCOM.BoMessageTime.bmt_Short,
             SAPbouiCOM.BoStatusBarMessageType.smt_Warning);
             System.Environment.Exit(0);

@@ -12,10 +12,10 @@ namespace SubconAddOn.Services
     public static class InventoryService
     {
         //private static readonly Company oCompany = CompanyService.GetCompany();
-        private static readonly string nonStoctActSql = @"SELECT TOP 1 T0.DfltExpn, T0.WipAcct, T0.WipVarAcct
+        private static readonly string nonStockSql = @"SELECT TOP 1 T0.DfltExpn, T0.WipAcct, T0.WipVarAcct
                 FROM OGAR T0
                 INNER JOIN OITB T1 ON T1.ItmsGrpCod =  T0.ItmsGrpCod
-                WHERE T0.UDF1 = '4' AND T1.ItmsGrpNam = 'NONSTOCK SINGLE PART'";
+                WHERE UPPER(T1.ItmsGrpNam) = 'NONSTOCK SINGLE PART'";
 
         public static int CreateGoodsIssue(Company oCompany, GoodsIssueModel model)
         {
@@ -58,7 +58,7 @@ namespace SubconAddOn.Services
                     gi.Lines.ItemCode = l.ItemCode;
                     gi.Lines.Quantity = l.Quantity;
                     gi.Lines.WarehouseCode = l.WarehouseCode;
-                    gi.Lines.UserFields.Fields.Item("U_T2_GRPO_LineNum").Value = l.GRPOLineNum;
+                    gi.Lines.UserFields.Fields.Item("U_T2_GRPO_LineNum").Value = int.Parse(l.GRPOLineNum);
 
                     if (!string.IsNullOrEmpty(l.AccountCode))
                         gi.Lines.AccountCode = l.AccountCode;
@@ -72,7 +72,7 @@ namespace SubconAddOn.Services
                 if (gi.Add() != 0)
                 {
                     oCompany.GetLastError(out int ec, out string em);
-                    throw new Exception($"Failed to Create Goods Issue [{ec}] {em}");
+                    throw new Exception($"Failed to Create Goods Issue ({ec}): {em}");
                 }
 
                 int docEntry = int.Parse(oCompany.GetNewObjectKey());
@@ -137,7 +137,7 @@ namespace SubconAddOn.Services
                     gr.Lines.Quantity = l.Quantity;
                     gr.Lines.WarehouseCode = l.WarehouseCode;
                     gr.Lines.UnitPrice = l.UnitPrice;
-                    gr.Lines.UserFields.Fields.Item("U_T2_GRPO_LineNum").Value = l.GRPOLineNum;
+                    gr.Lines.UserFields.Fields.Item("U_T2_GRPO_LineNum").Value = int.Parse(l.GRPOLineNum);
 
                     if (!string.IsNullOrEmpty(l.AccountCode))
                         gr.Lines.AccountCode = l.AccountCode;
@@ -151,7 +151,7 @@ namespace SubconAddOn.Services
                 if (gr.Add() != 0)
                 {
                     oCompany.GetLastError(out int ec, out string em);
-                    throw new Exception($"Failed to Create Goods Receipt [{ec}] {em}");
+                    throw new Exception($"Failed to Create Goods Receipt ({ec}): {em}");
                 }
 
                 int docEntry = int.Parse(oCompany.GetNewObjectKey());
@@ -177,36 +177,38 @@ namespace SubconAddOn.Services
         public static GoodsIssueModel GetGoodIssueByGRPO(Company oCompany, int docEntry)
         {
             if (docEntry <= 0)
-                throw new ArgumentException("Invalid GRPO DocEntry", nameof(docEntry));
+                throw new ArgumentException("Invalid Goods Receipt PO DocEntry", nameof(docEntry));
 
+            SAPbobsCOM.Documents oGRPO = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
+            if (!oGRPO.GetByKey(docEntry))
+                throw new Exception($"Goods Receipt PO {docEntry} not found");
+
+            Recordset rs = null;
+            Recordset rsDoc = null;
+
+            var accounts = GetAccountCodes(oCompany);
+            
             var dataModel = new GoodsIssueModel
             {
-                DocDate = DateTime.Now,
+                DocDate = oGRPO.DocDate,
                 GRPODocEntry = docEntry,
                 Lines = new List<GoodsIssueLineModel>()
             };
 
             string sql = $@"
                         SELECT 
-                            t4.Code                          AS ItemCode,
-                            (t4.Quantity * t1.Quantity)      AS Quantity,
-                            t4.Warehouse                     AS WarehouseCode,
-                            (
-                                SELECT TOP 1 WipAcct 
-                                FROM OGAR 
-                                WHERE UDF1 = '4' AND ISNULL(WipAcct,'') <> ''
-                            )                                AS AccountCode,
-                        t1.BaseEntry                         AS PODocEntry,
-                        t1.LineNum                         AS GRPOLineNum
+                            t4.Code AS ItemCode,
+                            ((t4.Quantity * t1.Quantity)/t3.Qauntity) AS Quantity,
+                            t4.Warehouse AS WarehouseCode,
+                            '{accounts.WipAcct}' AS AccountCode,
+                        t1.BaseEntry AS PODocEntry,
+                        t1.LineNum AS GRPOLineNum
                         FROM OPDN t0
                         JOIN PDN1 t1 ON t1.DocEntry = t0.DocEntry
                         JOIN OITM t2 ON t2.ItemCode = t1.ItemCode
                         JOIN OITT t3 ON t3.Code = t2.U_T2_BOM
                         JOIN ITT1 t4 ON t4.Father = t3.Code
                         WHERE t0.DocEntry = {docEntry}";
-            
-            Recordset rs = null;
-            Recordset rsDoc = null;
 
             try
             {
@@ -231,13 +233,13 @@ namespace SubconAddOn.Services
                 }
 
                 if (dataModel.Lines.Count == 0)
-                    throw new Exception("No BOM components found for this GRPO.");
+                    throw new Exception("No BOM components found for this Goods Receipt PO.");
                 
                 return dataModel;
             }
             catch (Exception ex)
             {
-                throw new Exception("Error while retrieving BOM for GRPO: " + ex.Message, ex);
+                throw new Exception("Error while retrieving BOM for Goods Receipt PO: " + ex.Message, ex);
             }
             finally
             {
@@ -249,13 +251,19 @@ namespace SubconAddOn.Services
         public static GoodsReceiptModel GetGoodReceiptByGRPO(Company oCompany,int grpoDocEntry, int giDocEntry)
         {
             if (grpoDocEntry <= 0)
-                throw new ArgumentException("Invalid GRPO DocEntry", nameof(grpoDocEntry));
+                throw new ArgumentException("Invalid Goods Receipt PO DocEntry", nameof(grpoDocEntry));
             if (giDocEntry <= 0)
-                throw new ArgumentException("Invalid GI DocEntry", nameof(giDocEntry));
+                throw new ArgumentException("Invalid Goods Issue DocEntry", nameof(giDocEntry));
+
+            SAPbobsCOM.Documents oGRPO = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
+            if (!oGRPO.GetByKey(grpoDocEntry))
+                throw new Exception($"Goods Receipt PO {grpoDocEntry} not found");
+
+            var accounts = GetAccountCodes(oCompany);
 
             var dataModel = new GoodsReceiptModel
             {
-                DocDate = DateTime.Now,
+                DocDate = oGRPO.DocDate,
                 GRPODocEntry = grpoDocEntry,
                 Lines = new List<GoodsReceiptLineModel>()
             };
@@ -265,14 +273,10 @@ namespace SubconAddOn.Services
                 T3.Code AS ItemCode,
                 T1.Quantity,
                 T1.WhsCode AS WarehouseCode,
-                (
-                    SELECT TOP 1 WipAcct 
-                    FROM OGAR 
-                    WHERE UDF1 = '4' AND ISNULL(WipAcct,'') <> '' 
-                ) AS AccountCode,
+                '{accounts.WipAcct}' AS AccountCode,
                 (
                     (
-                        SELECT SUM(ISNULL(_T1.LineTotal, 0))   -- GI LineTotal is in local currency
+                        SELECT SUM((ISNULL(_T1.Quantity, 0) * ISNULL(_T1.StockPrice, 0)))   -- GI LineTotal is in local currency
                         FROM OIGE _T0
                         INNER JOIN IGE1 _T1 ON _T1.DocEntry = _T0.DocEntry
                         INNER JOIN ITT1 _T2 ON _T2.Code = _T1.ItemCode
@@ -288,8 +292,7 @@ namespace SubconAddOn.Services
             INNER JOIN OITM T2 ON T2.ItemCode = T1.ItemCode
             INNER JOIN OITT T3 ON T3.Code = T2.U_T2_BOM
             WHERE T0.DocEntry = {grpoDocEntry}";
-
-
+            
             Recordset rs = null;
             Recordset rsDoc = null;
 
@@ -324,7 +327,7 @@ namespace SubconAddOn.Services
             }
             catch (Exception ex)
             {
-                throw new Exception("Error while retrieving WIP production orders: " + ex.Message, ex);
+                throw new Exception("Error while retrieving Goods Receipt PO: " + ex.Message, ex);
             }
             finally
             {
@@ -336,7 +339,8 @@ namespace SubconAddOn.Services
         public static bool IsStockAvailable(Company oCompany,string itemCode, double qty)
         {
             string sql = $@"
-                SELECT T2.Code AS ItemCode, T2.Warehouse AS WhsCode, CASE WHEN ISNULL(T3.OnHand,0) >= ({qty} * ISNULL(T2.Quantity,0)) THEN 1 ELSE 0 END IsAvailable 
+                SELECT T2.Code AS ItemCode, T2.Warehouse AS WhsCode, 
+                CASE WHEN ISNULL(T3.OnHand,0) >= (({qty} * ISNULL(T2.Quantity,0))/ISNULL(T1.Qauntity,0)) THEN 1 ELSE 0 END IsAvailable 
                 FROM OITM T0
                 INNER JOIN OITT T1 ON T0.U_T2_BOM=T1.Code
                 INNER JOIN ITT1 T2 ON T2.Father = T1.Code
@@ -380,14 +384,14 @@ namespace SubconAddOn.Services
                 SELECT 
                 T5.ItemCode, 
                 T5.WhsCode,
-                CASE WHEN ISNULL(T5.OnHand,0) >= ((ISNULL(T1.Quantity,0)) * ISNULL(T4.Quantity,0)) 
+                CASE WHEN ISNULL(T5.OnHand,0) >= ((ISNULL(T1.Quantity,0)) * ISNULL(T4.Quantity,0)/ISNULL(T3.Qauntity,0)) 
                 THEN 1 ELSE 0 END IsAvailable 
                 FROM OPDN T0
                 INNER JOIN PDN1 T1 ON T1.DocEntry = T0.DocEntry
                 INNER JOIN OITM T2 ON T2.ItemCode = T1.ItemCode
                 INNER JOIN OITT T3 ON T2.U_T2_BOM=T3.Code
                 INNER JOIN ITT1 T4 ON T4.Father = T3.Code
-                INNER JOIN OITW T5 ON T5.ItemCode = T4.Code AND T5.WhsCode = T1.WhsCode
+                INNER JOIN OITW T5 ON T5.ItemCode = T4.Code AND T5.WhsCode = T4.Warehouse
                 WHERE T0.DocEntry='{docEntry}'";
 
             Recordset rs = null;
@@ -452,6 +456,29 @@ namespace SubconAddOn.Services
             }
         }
 
+        public static (string DfltExpn, string WipAcct, string WipVarAcct) GetAccountCodes(Company oCompany)
+        {
+            try
+            {
+                SAPbobsCOM.Recordset rs = (SAPbobsCOM.Recordset)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.BoRecordset);
+                rs.DoQuery(nonStockSql);
+
+                if (rs.EoF)
+                    throw new Exception("WIP/Expense account config not found.");
+
+                string expenseAcct = rs.Fields.Item("DfltExpn").Value.ToString();
+                string wipAcct = rs.Fields.Item("WipAcct").Value.ToString();
+                string varAcct = rs.Fields.Item("WipVarAcct").Value.ToString();
+
+                return (expenseAcct, wipAcct, varAcct);
+            }
+            catch (Exception)
+            {
+
+                throw;
+            }
+        }
+
         public static int CreateJESubcon(Company oCompany, int grpoDocEntry)
         {
             int docEntry = 0;
@@ -469,10 +496,13 @@ namespace SubconAddOn.Services
                 //    oCompany.StartTransaction();
                 //    ownTrans = true;
                 //}
+                //GetAccounts
+                var accounts = GetAccountCodes(oCompany);
+
                 // Load GRPO
                 SAPbobsCOM.Documents oGRPO = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
                 if (!oGRPO.GetByKey(grpoDocEntry))
-                    throw new Exception("GRPO not found");
+                    throw new Exception($"Goods Receipt PO DocEntry {grpoDocEntry} not found");
 
                 // Get local currency
                 string localCurrency = "";
@@ -502,25 +532,16 @@ namespace SubconAddOn.Services
                 //SELECT TOP 1 T0.DfltExpn, T0.WipAcct, T0.WipVarAcct
                 //FROM OGAR T0
                 //WHERE T0.UDF1 = '4' AND T0.ItmsGrpCod = 122";
-
-                rs.DoQuery(nonStoctActSql);
-
-                if (rs.EoF)
-                    throw new Exception("WIP/Expense account config not found.");
-
-                string expenseAcct = rs.Fields.Item("DfltExpn").Value.ToString();
-                string wipAcct = rs.Fields.Item("WipAcct").Value.ToString();
-                string varAcct = rs.Fields.Item("WipVarAcct").Value.ToString();
-
+                
                 // Create JE Header
-                oJE.ReferenceDate = DateTime.Today;
-                oJE.TaxDate = DateTime.Today;
-                oJE.DueDate = DateTime.Today;
-                oJE.Memo = "GRPO Subcontract JE";
+                oJE.ReferenceDate = oGRPO.DocDate;
+                oJE.TaxDate = oGRPO.TaxDate;
+                oJE.DueDate = oGRPO.DocDueDate;
+                oJE.Memo = "Goods Receipt PO Subcontract Journal Entry";
                 oJE.Reference2 = oGRPO.DocNum.ToString();
 
                 // ===== Line 1: DEBIT (WIP Account) =====
-                oJE.Lines.AccountCode = wipAcct;
+                oJE.Lines.AccountCode = accounts.WipAcct;
                 if (isForeign)
                 {
                     oJE.Lines.FCCurrency = oGRPO.DocCurrency;
@@ -533,11 +554,11 @@ namespace SubconAddOn.Services
                     oJE.Lines.Debit = sumLineTotal;
                 }
                 oJE.Lines.Reference2 = oGRPO.DocNum.ToString();
-                oJE.Lines.LineMemo = "Subcon WIP - GRPO";
+                oJE.Lines.LineMemo = "Subcon WIP - Goods Receipt PO";
                 oJE.Lines.Add();
 
                 // ===== Line 2: CREDIT (Expense Account) =====
-                oJE.Lines.AccountCode = expenseAcct;
+                oJE.Lines.AccountCode = accounts.DfltExpn;
                 if (isForeign)
                 {
                     oJE.Lines.FCCurrency = oGRPO.DocCurrency;
@@ -550,7 +571,7 @@ namespace SubconAddOn.Services
                     oJE.Lines.Credit = sumLineTotal;
                 }
                 oJE.Lines.Reference2 = oGRPO.DocNum.ToString();
-                oJE.Lines.LineMemo = "Subcon Expense - GRPO";
+                oJE.Lines.LineMemo = "Subcon Expense - Goods Receipt PO";
 
                 // Add the JE
                 int result = oJE.Add();
@@ -563,7 +584,7 @@ namespace SubconAddOn.Services
                 else
                 {
                     oCompany.GetLastError(out int errCode, out string errMsg);
-                    throw new Exception($"Failed to create JE. Error {errCode}: {errMsg}");
+                    throw new Exception($"Failed to create Journal Entry. Error ({errCode}): {errMsg}");
                 }
                 //if (ownTrans)
                 //    oCompany.EndTransaction(BoWfTransOpt.wf_Commit);
@@ -573,7 +594,7 @@ namespace SubconAddOn.Services
             {
                 //if (ownTrans && oCompany.InTransaction)
                 //    oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
-                throw new Exception("CreateJESubcon failed: " + ex.Message, ex);
+                throw new Exception("Create Journal Entry Subcon failed: " + ex.Message, ex);
             }
             finally
             {
@@ -608,15 +629,15 @@ namespace SubconAddOn.Services
                 SAPbobsCOM.Documents oGRPO = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
 
                 if (!oGRPO.GetByKey(grpoDocEntry))
-                    throw new Exception($"GRPO with DocEntry {grpoDocEntry} not found.");
+                    throw new Exception($"Goods Receipt PO DocEntry {grpoDocEntry} not found.");
 
                 // Add Journal Entry as referenced document
                 oGRPO.DocumentReferences.Add();
                 oGRPO.DocumentReferences.SetCurrentLine(recCount);
                 oGRPO.DocumentReferences.ReferencedObjectType = SAPbobsCOM.ReferencedObjectTypeEnum.rot_JournalEntry; 
                 oGRPO.DocumentReferences.ReferencedDocEntry = jeDocEntry;
-                oGRPO.DocumentReferences.IssueDate = DateTime.Today;
-                oGRPO.DocumentReferences.Remark = "Auto-linked JE";
+                oGRPO.DocumentReferences.IssueDate = oGRPO.DocDate;
+                oGRPO.DocumentReferences.Remark = "Auto-linked Journal Entry";
 
                 // Update GRPO
                 int updateResult = oGRPO.Update();
@@ -624,7 +645,7 @@ namespace SubconAddOn.Services
                 if (updateResult != 0)
                 {
                     oCompany.GetLastError(out int errCode, out string errMsg);
-                    throw new Exception($"Failed to link JE to GRPO. Error {errCode}: {errMsg}");
+                    throw new Exception($"Failed to link Journal Entry to Goods Receipt PO. Error {errCode}: {errMsg}");
                 }
                 //if (ownTrans)
                 //    oCompany.EndTransaction(BoWfTransOpt.wf_Commit);
@@ -665,14 +686,14 @@ namespace SubconAddOn.Services
                 SAPbobsCOM.Documents oGRPO = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
 
                 if (!oGRPO.GetByKey(grpoDocEntry))
-                    throw new Exception($"GRPO with DocEntry {grpoDocEntry} not found.");
+                    throw new Exception($"Goods Receipt PO DocEntry {grpoDocEntry} not found.");
 
                 // Add Goods Issue as referenced document
                 oGRPO.DocumentReferences.Add();
                 oGRPO.DocumentReferences.SetCurrentLine(recCount);
                 oGRPO.DocumentReferences.ReferencedObjectType = SAPbobsCOM.ReferencedObjectTypeEnum.rot_GoodsIssue;
                 oGRPO.DocumentReferences.ReferencedDocEntry = giDocEntry;
-                oGRPO.DocumentReferences.IssueDate = DateTime.Today;
+                oGRPO.DocumentReferences.IssueDate = oGRPO.DocDate;
                 oGRPO.DocumentReferences.Remark = "Auto-linked Goods Issue";
 
                 // Update GRPO
@@ -681,7 +702,7 @@ namespace SubconAddOn.Services
                 if (updateResult != 0)
                 {
                     oCompany.GetLastError(out int errCode, out string errMsg);
-                    throw new Exception($"Failed to link Goods Issue to GRPO. Error {errCode}: {errMsg}");
+                    throw new Exception($"Failed to link Goods Issue to Goods Receipt PO. Error ({errCode}): {errMsg}");
                 }
                 //if (ownTrans)
                 //    oCompany.EndTransaction(BoWfTransOpt.wf_Commit);
@@ -722,14 +743,14 @@ namespace SubconAddOn.Services
                 SAPbobsCOM.Documents oGRPO = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
 
                 if (!oGRPO.GetByKey(grpoDocEntry))
-                    throw new Exception($"GRPO with DocEntry {grpoDocEntry} not found.");
+                    throw new Exception($"Goods Receipt PO DocEntry {grpoDocEntry} not found.");
 
                 // Add Goods Receipt as referenced document
                 oGRPO.DocumentReferences.Add();
                 oGRPO.DocumentReferences.SetCurrentLine(recCount);
                 oGRPO.DocumentReferences.ReferencedObjectType = SAPbobsCOM.ReferencedObjectTypeEnum.rot_GoodsReceipt;
                 oGRPO.DocumentReferences.ReferencedDocEntry = grDocEntry;
-                oGRPO.DocumentReferences.IssueDate = DateTime.Today;
+                oGRPO.DocumentReferences.IssueDate = oGRPO.DocDate;
                 oGRPO.DocumentReferences.Remark = "Auto-linked Goods Receipt";
 
                 // Update GRPO
@@ -738,7 +759,7 @@ namespace SubconAddOn.Services
                 if (updateResult != 0)
                 {
                     oCompany.GetLastError(out int errCode, out string errMsg);
-                    throw new Exception($"Failed to link Goods Receipt to GRPO. Error {errCode}: {errMsg}");
+                    throw new Exception($"Failed to link Goods Receipt to Goods Receipt PO. Error ({errCode}): {errMsg}");
                 }
                 return true;
             }
@@ -748,7 +769,7 @@ namespace SubconAddOn.Services
             }
         }
 
-        public static int CreateGoodsReceiptFromGI(Company oCompany, int giDocEntry)
+        public static int CreateGoodsReceiptFromGI(Company oCompany, int giDocEntry, DateTime grpoDate)
         {
             Documents oGI = (Documents)oCompany.GetBusinessObject(BoObjectTypes.oInventoryGenExit); // Goods Issue
             Documents oGR = (Documents)oCompany.GetBusinessObject(BoObjectTypes.oInventoryGenEntry); // Goods Receipt
@@ -759,22 +780,33 @@ namespace SubconAddOn.Services
                 throw new Exception("Goods Issue not found.");
             
             // Set header info
-            oGR.DocDate = DateTime.Now;
-            oGR.TaxDate = DateTime.Now;
+            oGR.DocDate = grpoDate;
+            oGR.TaxDate = grpoDate;
             oGR.Comments = "Created from canceled GI : " + oGI.DocNum;
             oGR.UserFields.Fields.Item("U_T2_Ref_PO").Value = oGI.UserFields.Fields.Item("U_T2_Ref_PO").Value.ToString();
             oGR.UserFields.Fields.Item("U_T2_GR_Reason").Value = oGI.UserFields.Fields.Item("U_T2_GI_Reason").Value.ToString();
             oGR.UserFields.Fields.Item("U_T2_Ref_GRPO").Value = oGI.UserFields.Fields.Item("U_T2_Ref_GRPO").Value;
 
+            SAPbobsCOM.Recordset rs = (SAPbobsCOM.Recordset)oCompany.GetBusinessObject(BoObjectTypes.BoRecordset);
+            rs = (Recordset)oCompany.GetBusinessObject(BoObjectTypes.BoRecordset);
             // Loop through GI lines and copy to GR
             for (int i = 0; i < oGI.Lines.Count; i++)
             {
                 oGI.Lines.SetCurrentLine(i);
+                //Sementara pakai query, untuk ambil stock price.
+                double stockPrice = 0;
+                var sql = $"SELECT TOP 1 StockPrice FROM IGE1 WHERE DocEntry = {giDocEntry} AND LineNum = {oGI.Lines.LineNum}";
+                rs.DoQuery(sql);
+
+                if (!rs.EoF)
+                {
+                    stockPrice = Convert.ToDouble(rs.Fields.Item("StockPrice").Value);
+                }
 
                 oGR.Lines.ItemCode = oGI.Lines.ItemCode;
                 oGR.Lines.Quantity = oGI.Lines.Quantity;
                 oGR.Lines.WarehouseCode = oGI.Lines.WarehouseCode;
-                oGR.Lines.UnitPrice = oGI.Lines.UnitPrice;
+                oGR.Lines.UnitPrice = stockPrice;
                 oGR.Lines.AccountCode = oGI.Lines.AccountCode;
                 oGR.Lines.UserFields.Fields.Item("U_T2_GRPO_LineNum").Value = oGI.Lines.UserFields.Fields.Item("U_T2_GRPO_LineNum").Value.ToString();
                 // Optional: Copy UDFs or serial/batch if needed
@@ -786,23 +818,23 @@ namespace SubconAddOn.Services
             if (oGR.Add() != 0)
             {
                 oCompany.GetLastError(out int errCode, out string errMsg);
-                throw new Exception($"Failed to add Goods Receipt: {errMsg} (Code: {errCode})");
+                throw new Exception($"Failed to add Goods Receipt ({errCode}): {errMsg}");
             }
 
             return int.Parse(oCompany.GetNewObjectKey()); // GR DocEntry
         }
 
-        public static int CreateGoodsIssueFromGR(Company oCompany, int grDocEntry)
+        public static int CreateGoodsIssueFromGR(Company oCompany, int grDocEntry, DateTime grpoDate)
         {
             Documents oGR = (Documents)oCompany.GetBusinessObject(BoObjectTypes.oInventoryGenEntry); // Goods Receipt
             Documents oGI = (Documents)oCompany.GetBusinessObject(BoObjectTypes.oInventoryGenExit);  // Goods Issue
 
             if (!oGR.GetByKey(grDocEntry))
-                throw new Exception("Goods Receipt not found.");
+                throw new Exception($"Goods Receipt DocEntry {grDocEntry} not found.");
 
             // Set GI header info
-            oGI.DocDate = DateTime.Now;
-            oGI.TaxDate = DateTime.Now;
+            oGI.DocDate = grpoDate;
+            oGI.TaxDate = grpoDate;
             oGI.Comments = "Created from canceled GR : " + oGR.DocNum;
             oGI.UserFields.Fields.Item("U_T2_Ref_PO").Value = oGR.UserFields.Fields.Item("U_T2_Ref_PO").Value.ToString();
             oGI.UserFields.Fields.Item("U_T2_GI_Reason").Value = oGR.UserFields.Fields.Item("U_T2_GR_Reason").Value.ToString();
@@ -828,7 +860,7 @@ namespace SubconAddOn.Services
             if (oGI.Add() != 0)
             {
                 oCompany.GetLastError(out int errCode, out string errMsg);
-                throw new Exception($"Failed to create Goods Issue. Error {errCode}: {errMsg}");
+                throw new Exception($"Failed to create Goods Issue. Error ({errCode}): {errMsg}");
             }
 
             return int.Parse(oCompany.GetNewObjectKey()); // GI DocEntry
@@ -845,7 +877,7 @@ namespace SubconAddOn.Services
                     if (result != 0)
                     {
                         oCompany.GetLastError(out int errCode, out string errMsg);
-                        throw new Exception($"Cancel failed. Error {errCode}: {errMsg}");
+                        throw new Exception($"Cancel failed. Error ({errCode}): {errMsg}");
                     }
                 }
 
@@ -868,13 +900,13 @@ namespace SubconAddOn.Services
                         if (oGRPO.GetByKey(grpoDocEntry))
                         {
                             cancelJE.Reference2 = oGRPO.DocNum.ToString();
-                            cancelJE.Reference3 = "GRPO - Cancellation";
+                            cancelJE.Reference3 = "Goods Receipt PO - Cancellation";
                             int lineCount = cancelJE.Lines.Count;
                             for (int i = 0; i < lineCount; i++)
                             {
                                 cancelJE.Lines.SetCurrentLine(i);
                                 cancelJE.Lines.Reference2 = oGRPO.DocNum.ToString();
-                                cancelJE.Lines.AdditionalReference = "GRPO - Cancellation";
+                                cancelJE.Lines.AdditionalReference = "Goods Receipt PO - Cancellation";
                             }
                             
                             // Update GRPO
@@ -883,7 +915,7 @@ namespace SubconAddOn.Services
                             if (updateResult != 0)
                             {
                                 oCompany.GetLastError(out int errCode, out string errMsg);
-                                throw new Exception($"Failed to link JE to GRPO. Error {errCode}: {errMsg}");
+                                throw new Exception($"Failed to link Journal Entry to Goods Receipt PO. Error {errCode}: {errMsg}");
                             }
                         }
                     }
@@ -952,6 +984,10 @@ namespace SubconAddOn.Services
 
             try
             {
+                SAPbobsCOM.Documents oGRPO = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
+                if (!oGRPO.GetByKey(docEntry))
+                    throw new Exception($"Goods Receipt PO DocEntry {docEntry} not found");
+
                 rs = (SAPbobsCOM.Recordset)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.BoRecordset);
                 rs.DoQuery(sqlGI);
 
@@ -961,7 +997,7 @@ namespace SubconAddOn.Services
                     
                     if (int.TryParse(giEntry, out int entry))
                     {
-                        var grEntry = CreateGoodsReceiptFromGI(oCompany,entry);
+                        var grEntry = CreateGoodsReceiptFromGI(oCompany,entry, oGRPO.DocDate);
                         LinkGRToGRPO(oCompany,docEntry, grEntry);
                         //Documents oGR = (Documents)oCompany.GetBusinessObject(BoObjectTypes.oInventoryGenEntry); // Goods Receipt
                         //if (oGR.GetByKey(grEntry))
@@ -985,7 +1021,7 @@ namespace SubconAddOn.Services
                             grJE = oGR.TransNum;
                         }
 
-                        var giEntry  = CreateGoodsIssueFromGR(oCompany,entry);
+                        var giEntry  = CreateGoodsIssueFromGR(oCompany,entry,oGRPO.DocDate);
                         LinkGIToGRPO(oCompany,docEntry, giEntry);
 
                         Documents oGI = (Documents)oCompany.GetBusinessObject(BoObjectTypes.oInventoryGenExit); // Goods Issue
@@ -996,8 +1032,8 @@ namespace SubconAddOn.Services
 
                         if (grJE != 0 && giCancelJE != 0)
                         {
-                            int jeVar = CreateJEVariance(oCompany,giCancelJE, grJE, docEntry);
-                            LinkJEToGRPO(oCompany,docEntry, jeVar);
+                            int jeVar = CreateJEVariance(oCompany,giCancelJE, grJE, docEntry, oGRPO.DocDate);
+                            if(jeVar != 0) LinkJEToGRPO(oCompany,docEntry, jeVar);
                         }
                     }
                 }
@@ -1015,7 +1051,7 @@ namespace SubconAddOn.Services
             }
         }
 
-        public static int CreateJEVariance(Company oCompany, int giJEId, int grJEId, int grpoDocEntry)
+        public static int CreateJEVariance(Company oCompany, int giJEId, int grJEId, int grpoDocEntry, DateTime grpoDate)
         {
             int docEntry = 0;
             Recordset rs = null;
@@ -1032,14 +1068,7 @@ namespace SubconAddOn.Services
             
             try
             {
-                rs = (SAPbobsCOM.Recordset)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.BoRecordset);
-                rs.DoQuery(nonStoctActSql);
-
-                if (rs.EoF)
-                    throw new Exception("WIP/Expense account config not found.");
-                
-                string wipAcct = rs.Fields.Item("WipAcct").Value.ToString();
-                string varAcct = rs.Fields.Item("WipVarAcct").Value.ToString();
+                var accounts = GetAccountCodes(oCompany);
 
                 if (giJE.GetByKey(giJEId) && grJE.GetByKey(grJEId) && oGRPO.GetByKey(grpoDocEntry))
                 {
@@ -1065,16 +1094,18 @@ namespace SubconAddOn.Services
                     var diffDeb = (debitGI - debitGR);
                     double absDiff = Math.Abs(diffDeb);
 
+                    if (diffDeb == 0) return 0;
+
                     // Create JE Header
-                    oJE.ReferenceDate = DateTime.Today;
-                    oJE.TaxDate = DateTime.Today;
-                    oJE.DueDate = DateTime.Today;
-                    oJE.Memo = $"Variance between GR JE {grJE.Number} and GI JE {giJE.Number}";
+                    oJE.ReferenceDate = grpoDate;
+                    oJE.TaxDate = grpoDate;
+                    oJE.DueDate = grpoDate;
+                    oJE.Memo = $"Variance between Goods Receipt's Journal Entry {grJE.Number} and Goods Issue's Journal Entry {giJE.Number}";
                     oJE.Reference2 = oGRPO.DocNum.ToString();
-                    oJE.Reference3 = "GRPO - Cancellation";
+                    oJE.Reference3 = "Goods Receipt PO - Cancellation";
 
                     // WIP account line
-                    oJE.Lines.AccountCode = wipAcct;
+                    oJE.Lines.AccountCode = accounts.WipAcct;
                     if (diffDeb > 0)
                     {
                         oJE.Lines.Debit = absDiff;
@@ -1084,11 +1115,11 @@ namespace SubconAddOn.Services
                         oJE.Lines.Credit = absDiff;
                     }
                     oJE.Lines.Reference2 = oGRPO.DocNum.ToString();
-                    oJE.Lines.AdditionalReference = "GRPO - Cancellation";
+                    oJE.Lines.AdditionalReference = "Goods Receipt PO - Cancellation";
                     oJE.Lines.Add();
 
                     // Variance account line
-                    oJE.Lines.AccountCode = varAcct;
+                    oJE.Lines.AccountCode = accounts.WipVarAcct;
                     if (diffDeb > 0)
                     {
                         oJE.Lines.Credit = absDiff;
@@ -1098,7 +1129,7 @@ namespace SubconAddOn.Services
                         oJE.Lines.Debit = absDiff;
                     }
                     oJE.Lines.Reference2 = oGRPO.DocNum.ToString();
-                    oJE.Lines.AdditionalReference = "GRPO - Cancellation";
+                    oJE.Lines.AdditionalReference = "Goods Receipt PO - Cancellation";
                     oJE.Lines.Add();
 
                     // Add the JE
@@ -1112,7 +1143,7 @@ namespace SubconAddOn.Services
                     else
                     {
                         oCompany.GetLastError(out int errCode, out string errMsg);
-                        throw new Exception($"Failed to create JE. Error {errCode}: {errMsg}");
+                        throw new Exception($"Failed to create Journal Entry. Error {errCode}: {errMsg}");
                     }
 
                 }
@@ -1190,28 +1221,28 @@ namespace SubconAddOn.Services
                 rs = (Recordset)oCompany.GetBusinessObject(BoObjectTypes.BoRecordset);
                 rs.DoQuery($"SELECT CANCELED FROM OPDN WHERE DocEntry = {docEntry}");
                 if (rs.RecordCount == 0)
-                    throw new Exception($"GRPO dengan DocEntry {docEntry} tidak ditemukan.");
+                    throw new Exception($"Goods Receipt PO DocEntry {docEntry} not found.");
 
                 string canceled = rs.Fields.Item("CANCELED").Value.ToString();
                 if (canceled == "Y")
-                    throw new Exception($"GRPO dengan DocEntry {docEntry} sudah dibatalkan.");
+                    throw new Exception($"Goods Receipt PO DocEntry {docEntry} already canceled.");
 
                 grpo = (Documents)oCompany.GetBusinessObject(BoObjectTypes.oPurchaseDeliveryNotes);
                 oCancel = (Documents)oCompany.GetBusinessObject(BoObjectTypes.oPurchaseDeliveryNotes);
                 if (!grpo.GetByKey(docEntry))
-                    throw new Exception($"Tidak bisa load GRPO DocEntry {docEntry}.");
+                    throw new Exception($"Goods Receipt PO DocEntry {docEntry} not found.");
 
                 if (grpo.DocumentStatus == BoStatus.bost_Close)
-                    throw new Exception($"GRPO DocEntry {docEntry} sudah ditutup dan tidak bisa dibatalkan.");
+                    throw new Exception($"Goods Receipt PO DocEntry {docEntry} already closed.");
 
                 oCancel = grpo.CreateCancellationDocument();
                 var res = oCancel.Add();
                 if (res != 0)
                 {
                     oCompany.GetLastError(out int errCode, out string errMsg);
-                    throw new Exception($"Gagal membatalkan GRPO ({errCode}): {errMsg}");
+                    throw new Exception($"Failed to cancel Goods Receipt PO ({errCode}): {errMsg}");
                 }
-                Console.WriteLine($"GRPO {docEntry} berhasil dibatalkan.");
+                Console.WriteLine($"Goods Receipt PO {docEntry} successfully canceled.");
             }
             finally
             {
@@ -1242,7 +1273,7 @@ namespace SubconAddOn.Services
                 SAPbobsCOM.Documents oGRPO = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
 
                 if (!oGRPO.GetByKey(grpoDocEntry))
-                    throw new Exception($"GRPO with DocEntry {grpoDocEntry} not found.");
+                    throw new Exception($"Goods Receipt PO DocEntry {grpoDocEntry} not found.");
 
                 for (int i = recCount - 1; i >= 0; i--) // Loop backwards for safe removal
                 {
@@ -1256,7 +1287,7 @@ namespace SubconAddOn.Services
                 if (updateResult != 0)
                 {
                     oCompany.GetLastError(out int errCode, out string errMsg);
-                    throw new Exception($"Failed to delete Ref. Documents in GRPO. Error {errCode}: {errMsg}");
+                    throw new Exception($"Failed to delete Ref. Documents in Goods Receipt PO. Error ({errCode}): {errMsg}");
                 }
                 return true;
             }
@@ -1317,12 +1348,12 @@ namespace SubconAddOn.Services
                     if (oGRPO.GetByKey(grpoDocEntry))
                     {
                         cancelJE.Reference2 = oGRPO.DocNum.ToString();
-                        cancelJE.Reference3 = "GRPO - Cancellation";
+                        cancelJE.Reference3 = "Goods Receipt PO - Cancellation";
                         for (int i = 0; i < cancelJE.Lines.Count; i++)
                         {
                             cancelJE.SetCurrentLine(i);
                             cancelJE.Lines.Reference2 = oGRPO.DocNum.ToString();
-                            cancelJE.Lines.AdditionalReference = "GRPO - Cancellation";
+                            cancelJE.Lines.AdditionalReference = "Goods Receipt PO - Cancellation";
                         }
 
                         // Update GRPO
@@ -1332,7 +1363,7 @@ namespace SubconAddOn.Services
                         if (updateResult != 0)
                         {
                             oCompany.GetLastError(out int errCode, out string errMsg);
-                            throw new Exception($"Failed to link JE to GRPO. Error {errCode}: {errMsg}");
+                            throw new Exception($"Failed to link Jornal Entry to Goods Receipt PO. Error ({errCode}): {errMsg}");
                         }
                     }
                 }
@@ -1360,7 +1391,7 @@ namespace SubconAddOn.Services
                     if (result != 0)
                     {
                         oCompany.GetLastError(out int errCode, out string errMsg);
-                        throw new Exception($"Cancel failed. Error {errCode}: {errMsg}");
+                        throw new Exception($"Failed to cancel Journal Entry. Error {errCode}: {errMsg}");
                     }
                 }
 
@@ -1404,6 +1435,10 @@ namespace SubconAddOn.Services
 
             try
             {
+                SAPbobsCOM.Documents oGRPO = (SAPbobsCOM.Documents)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.oPurchaseDeliveryNotes);
+                if (!oGRPO.GetByKey(originEntry))
+                    throw new Exception($"Goods Receipt PO DocEntry {originEntry} not found.");
+
                 rs = (SAPbobsCOM.Recordset)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.BoRecordset);
                 rs.DoQuery(sqlGI);
 
@@ -1413,7 +1448,7 @@ namespace SubconAddOn.Services
 
                     if (int.TryParse(giEntry, out int entry))
                     {
-                        var grEntry = CreateGoodsReceiptFromGI(oCompany, entry);
+                        var grEntry = CreateGoodsReceiptFromGI(oCompany, entry, oGRPO.DocDate);
                         result.Add("GR", grEntry);
                     }
                 }
@@ -1432,7 +1467,7 @@ namespace SubconAddOn.Services
                             grJE = oGR.TransNum;
                         }
 
-                        var giEntry = CreateGoodsIssueFromGR(oCompany, entry);
+                        var giEntry = CreateGoodsIssueFromGR(oCompany, entry, oGRPO.DocDate);
                         result.Add("GI",giEntry);
                         Documents oGI = (Documents)oCompany.GetBusinessObject(BoObjectTypes.oInventoryGenExit); // Goods Issue
                         if (oGI.GetByKey(giEntry))
@@ -1442,8 +1477,8 @@ namespace SubconAddOn.Services
 
                         if (grJE != 0 && giCancelJE != 0)
                         {
-                            int jeVar = CreateJEVarianceTemp(oCompany, giCancelJE, grJE);
-                            result.Add("JEVar",jeVar);
+                            int jeVar = CreateJEVarianceTemp(oCompany, giCancelJE, grJE, oGRPO.DocDate);
+                            if(jeVar != 0) result.Add("JEVar",jeVar);
                         }
                     }
                 }
@@ -1461,7 +1496,7 @@ namespace SubconAddOn.Services
             }
         }
 
-        public static int CreateJEVarianceTemp(Company oCompany, int giJEId, int grJEId)
+        public static int CreateJEVarianceTemp(Company oCompany, int giJEId, int grJEId, DateTime grpoDate)
         {
             int docEntry = 0;
             Recordset rs = null;
@@ -1476,14 +1511,7 @@ namespace SubconAddOn.Services
             
             try
             {
-                rs = (SAPbobsCOM.Recordset)oCompany.GetBusinessObject(SAPbobsCOM.BoObjectTypes.BoRecordset);
-                rs.DoQuery(nonStoctActSql);
-
-                if (rs.EoF)
-                    throw new Exception("WIP/Expense account config not found.");
-
-                string wipAcct = rs.Fields.Item("WipAcct").Value.ToString();
-                string varAcct = rs.Fields.Item("WipVarAcct").Value.ToString();
+                var accounts = GetAccountCodes(oCompany);
 
                 if (giJE.GetByKey(giJEId) && grJE.GetByKey(grJEId))
                 {
@@ -1509,15 +1537,17 @@ namespace SubconAddOn.Services
                     var diffDeb = (debitGI - debitGR);
                     double absDiff = Math.Abs(diffDeb);
 
+                    if (diffDeb == 0) return 0;
+
                     // Create JE Header
-                    oJE.ReferenceDate = DateTime.Today;
-                    oJE.TaxDate = DateTime.Today;
-                    oJE.DueDate = DateTime.Today;
-                    oJE.Memo = $"Variance between GR JE {grJE.Number} and GI JE {giJE.Number}";
-                    oJE.Reference3 = "GRPO - Cancellation";
+                    oJE.ReferenceDate = grpoDate;
+                    oJE.TaxDate = grpoDate;
+                    oJE.DueDate = grpoDate;
+                    oJE.Memo = $"Variance between Goods Receipt's Journal Entry {grJE.Number} and Goods Issue's Journal Entry {giJE.Number}";
+                    oJE.Reference3 = "Goods Receipt PO - Cancellation";
 
                     // WIP account line
-                    oJE.Lines.AccountCode = wipAcct;
+                    oJE.Lines.AccountCode = accounts.WipAcct;
                     if (diffDeb > 0)
                     {
                         oJE.Lines.Debit = absDiff;
@@ -1526,11 +1556,11 @@ namespace SubconAddOn.Services
                     {
                         oJE.Lines.Credit = absDiff;
                     }
-                    oJE.Lines.AdditionalReference = "GRPO - Cancellation";
+                    oJE.Lines.AdditionalReference = "Goods Receipt PO - Cancellation";
                     oJE.Lines.Add();
 
                     // Variance account line
-                    oJE.Lines.AccountCode = varAcct;
+                    oJE.Lines.AccountCode = accounts.WipVarAcct;
                     if (diffDeb > 0)
                     {
                         oJE.Lines.Credit = absDiff;
@@ -1539,7 +1569,7 @@ namespace SubconAddOn.Services
                     {
                         oJE.Lines.Debit = absDiff;
                     }
-                    oJE.Lines.AdditionalReference = "GRPO - Cancellation";
+                    oJE.Lines.AdditionalReference = "Goods Receipt PO - Cancellation";
                     oJE.Lines.Add();
 
                     // Add the JE
@@ -1553,7 +1583,7 @@ namespace SubconAddOn.Services
                     else
                     {
                         oCompany.GetLastError(out int errCode, out string errMsg);
-                        throw new Exception($"Failed to create JE. Error {errCode}: {errMsg}");
+                        throw new Exception($"Failed to create Journal Entry. Error ({errCode}): {errMsg}");
                     }
 
                 }
