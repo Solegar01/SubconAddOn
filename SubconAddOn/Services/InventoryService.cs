@@ -336,10 +336,12 @@ namespace SubconAddOn.Services
             }
         }
 
-        public static bool IsStockAvailable(Company oCompany,string itemCode, double qty)
+        public static List<string> IsStockAvailable(Company oCompany,string itemCode, double qty)
         {
+            List<string> results = new List<string>();
+
             string sql = $@"
-                SELECT T2.Code AS ItemCode, T2.Warehouse AS WhsCode, 
+                SELECT T2.Code AS ItemCode, T2.Warehouse AS WhsCode, ISNULL(T3.OnHand,0) AS Qty, (({qty} * ISNULL(T2.Quantity,0))/ISNULL(T1.Qauntity,0)) AS PlanQty, 
                 CASE WHEN ISNULL(T3.OnHand,0) >= (({qty} * ISNULL(T2.Quantity,0))/ISNULL(T1.Qauntity,0)) THEN 1 ELSE 0 END IsAvailable 
                 FROM OITM T0
                 INNER JOIN OITT T1 ON T0.U_T2_BOM=T1.Code
@@ -361,11 +363,13 @@ namespace SubconAddOn.Services
                     {
                         string itemBom = rs.Fields.Item("ItemCode").Value.ToString();
                         string whsBom = rs.Fields.Item("WhsCode").Value.ToString();
-                        throw new Exception($"Stock for item {itemBom} in {whsBom} is not available ");
+                        double bomQty = double.Parse(rs.Fields.Item("Qty").Value.ToString());
+                        double planQty = double.Parse(rs.Fields.Item("PlanQty").Value.ToString());
+                        results.Add($"Item: {itemBom} || Warehouse: {whsBom} || Available Qty: {bomQty} || Planned Qty: {planQty}");
                     }
                     rs.MoveNext();
                 }
-                return true;
+                return results;
             }
             catch (Exception ex)
             {
@@ -378,12 +382,15 @@ namespace SubconAddOn.Services
             }
         }
 
-        public static void IsStockAvailableCancel(Company oCompany,int docEntry)
+        public static List<string> IsStockAvailableCancel(Company oCompany,int docEntry)
         {
+            List<string> results = new List<string>();
+
             string sql = $@"
                 SELECT 
                 T5.ItemCode, 
                 T5.WhsCode,
+                ISNULL(T5.OnHand,0) Qty, ((ISNULL(T1.Quantity,0)) * ISNULL(T4.Quantity,0)/ISNULL(T3.Qauntity,0)) AS PlanQty, 
                 CASE WHEN ISNULL(T5.OnHand,0) >= ((ISNULL(T1.Quantity,0)) * ISNULL(T4.Quantity,0)/ISNULL(T3.Qauntity,0)) 
                 THEN 1 ELSE 0 END IsAvailable 
                 FROM OPDN T0
@@ -408,10 +415,13 @@ namespace SubconAddOn.Services
                     {
                         string itemBom = rs.Fields.Item("ItemCode").Value.ToString();
                         string whsBom = rs.Fields.Item("WhsCode").Value.ToString();
-                        throw new Exception($"Stock for item {itemBom} in {whsBom} is not available ");
+                        double bomQty = double.Parse(rs.Fields.Item("Qty").Value.ToString());
+                        double planQty = double.Parse(rs.Fields.Item("PlanQty").Value.ToString());
+                        results.Add($"Item: {itemBom} || Warehouse: {whsBom} || Available Qty: {bomQty} || Planned Qty: {planQty}");
                     }
                     rs.MoveNext();
                 }
+                return results;
             }
             catch (Exception ex)
             {
@@ -554,7 +564,7 @@ namespace SubconAddOn.Services
                     oJE.Lines.Debit = sumLineTotal;
                 }
                 oJE.Lines.Reference2 = oGRPO.DocNum.ToString();
-                oJE.Lines.LineMemo = "Subcon WIP - Goods Receipt PO";
+                oJE.Lines.LineMemo = "Subcontract WIP - Goods Receipt PO";
                 oJE.Lines.Add();
 
                 // ===== Line 2: CREDIT (Expense Account) =====
@@ -571,7 +581,7 @@ namespace SubconAddOn.Services
                     oJE.Lines.Credit = sumLineTotal;
                 }
                 oJE.Lines.Reference2 = oGRPO.DocNum.ToString();
-                oJE.Lines.LineMemo = "Subcon Expense - Goods Receipt PO";
+                oJE.Lines.LineMemo = "Subcontract Expense - Goods Receipt PO";
 
                 // Add the JE
                 int result = oJE.Add();
@@ -594,7 +604,7 @@ namespace SubconAddOn.Services
             {
                 //if (ownTrans && oCompany.InTransaction)
                 //    oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
-                throw new Exception("Create Journal Entry Subcon failed: " + ex.Message, ex);
+                throw new Exception("Create Journal Entry Subcontract failed: " + ex.Message, ex);
             }
             finally
             {

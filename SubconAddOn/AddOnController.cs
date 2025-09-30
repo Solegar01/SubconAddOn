@@ -25,7 +25,7 @@ namespace SubconAddOn
         {
             RegisterAppEvents();
             Application.SBO_Application.StatusBar.SetText(
-            "Subcon Add-on (GI-GR auto-generation) has been loaded.",
+            "Subcontract Add-On has been loaded.",
             SAPbouiCOM.BoMessageTime.bmt_Short,
             SAPbouiCOM.BoStatusBarMessageType.smt_Success);
 
@@ -124,7 +124,7 @@ namespace SubconAddOn
                 }
                 else if (canceled == "C" && poType == "4")
                 {
-                    ValidateCancellationDocuments();
+                    ValidateCancellationDocuments(form);
                 }
                 //throw new Exception("TEST");
             }
@@ -155,23 +155,23 @@ namespace SubconAddOn
             }
         }
         
-        private static void ValidateBomStock(SAPbouiCOM.Form form)
+        private static void ValidateBomStock(SAPbouiCOM.Form oForm)
         {
             Company oCompany = Services.CompanyService.GetCompany();
-            SAPbouiCOM.ProgressBar progressBar = null;
             
             try
             {
-                progressBar = Application.SBO_Application.StatusBar.CreateProgressBar("Validating BOM stock...", 100, false);
-                progressBar.Text = "Validating BOM stock...";
+                FormHelper.StartLoading(oForm, "Validating BOM stock...", 100, false);
                 System.Threading.Thread.Sleep(1000); // Delay 2 seconds
 
-                var matrix = (SAPbouiCOM.Matrix)form.Items.Item("38").Specific;
+                var matrix = (SAPbouiCOM.Matrix)oForm.Items.Item("38").Specific;
                 int rowCount = matrix.RowCount;
+                List<string> err = new List<string>();
 
                 for (int i = 1; i <= rowCount; i++)
                 {
-                    progressBar.Value = (int)((i / (double)rowCount) * 100);
+                    var progVal = (int)((i / (double)rowCount) * 100);
+                    FormHelper.SetTextValueLoading(oForm, progVal);
 
                     string itemCode = ((SAPbouiCOM.EditText)matrix.Columns.Item("1").Cells.Item(i).Specific).Value;
                     if (InventoryService.IsBom(oCompany, itemCode))
@@ -179,9 +179,33 @@ namespace SubconAddOn
                         string qtyStr = ((SAPbouiCOM.EditText)matrix.Columns.Item("11").Cells.Item(i).Specific).Value;
                         if (double.TryParse(qtyStr, NumberStyles.Any, CultureInfo.InvariantCulture, out double qty))
                         {
-                            InventoryService.IsStockAvailable(oCompany, itemCode, qty);
+                            var errItem = InventoryService.IsStockAvailable(oCompany, itemCode, qty);
+                            if (errItem.Any())
+                            {
+                                err.AddRange(errItem);
+                            }
                         }
                     }
+                }
+
+                if (err.Any())
+                {
+                    string message;
+
+                    if (err.Count == 1)
+                    {
+                        // Single item
+                        message = $"Item not available in stock:\n{err[0]}";
+                    }
+                    else
+                    {
+                        // Multiple items
+                        string itemsList = string.Join(Environment.NewLine, err);
+                        message = $"These items are not available in stock:\n{itemsList}";
+                    }
+
+                    SAPbouiCOM.Framework.Application.SBO_Application.MessageBox(message);
+                    throw new Exception("An error occurred while validating BOM item stock.");
                 }
             }catch(Exception e)
             {
@@ -189,33 +213,47 @@ namespace SubconAddOn
             }
             finally
             {
-                CleanupProgressBar(progressBar);
+                FormHelper.FinishLoading(oForm);
             }
         }
 
-        private static void ValidateCancellationDocuments()
+        private static void ValidateCancellationDocuments(SAPbouiCOM.Form oForm)
         {
-            SAPbouiCOM.ProgressBar progressBar = null;
             Company oCompany = null;
             try
             {
                 if (_isCancelTrans && _docEntry != 0)
                 {
-                    progressBar = Application.SBO_Application.StatusBar.CreateProgressBar("Validating cancellation document…", 3, false);
-                    progressBar.Text = "Validating cancellation document…";
+                    FormHelper.StartLoading(oForm, "Validating cancellation document…", 3, false);
                     if (oCompany == null) oCompany = Services.CompanyService.GetCompany();
                     if (!oCompany.InTransaction) oCompany.StartTransaction();
 
-                    progressBar.Text = "Validating Stock Cancellation...";
-                    progressBar.Value = 1;
-                    InventoryService.IsStockAvailableCancel(oCompany, _docEntry);
+                    FormHelper.SetTextValueLoading(oForm, 1, "Validating Stock Cancellation...");
+                    var err = InventoryService.IsStockAvailableCancel(oCompany, _docEntry);
+                    if (err.Any())
+                    {
+                        string message;
 
-                    progressBar.Text = "Validating Jountry Entry Cancellation...";
-                    progressBar.Value = 2;
+                        if (err.Count == 1)
+                        {
+                            // Single item
+                            message = $"Item not available in stock:\n{err[0]}";
+                        }
+                        else
+                        {
+                            // Multiple items
+                            string itemsList = string.Join(Environment.NewLine, err);
+                            message = $"These items are not available in stock:\n{itemsList}";
+                        }
+
+                        SAPbouiCOM.Framework.Application.SBO_Application.MessageBox(message);
+                        throw new Exception("An error occurred while validating BOM item stock.");
+                    }
+
+                    FormHelper.SetTextValueLoading(oForm, 2, "Validating Jountry Entry Cancellation...");
                     InventoryService.CancelJEByGRPOTemp(oCompany, _docEntry);
 
-                    progressBar.Text = "Validating Goods Issue & Goods Receipt Cancellation...";
-                    progressBar.Value = 3;
+                    FormHelper.SetTextValueLoading(oForm, 3, "Validating Goods Issue & Goods Receipt Cancellation...");
                     InventoryService.CancelGIGRByGRPOTemp(oCompany, _docEntry);
                 }
             }
@@ -246,105 +284,106 @@ namespace SubconAddOn
             {
                 if (oCompany.InTransaction)
                     oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
-                CleanupProgressBar(progressBar);
+                FormHelper.FinishLoading(oForm);
             }
-        }
-
-        private static void CleanupProgressBar(SAPbouiCOM.ProgressBar progressBar)
-        {
-            progressBar?.Stop();
-            if (progressBar != null)
-                System.Runtime.InteropServices.Marshal.ReleaseComObject(progressBar);
-            progressBar = null;
         }
         
         private static void SBO_Application_FormDataEvent(ref SAPbouiCOM.BusinessObjectInfo bi, out bool bubbleEvent)
         {
             bubbleEvent = true;
+
+            string type = bi.Type;
             string formUID = Application.SBO_Application.Forms.ActiveForm.UniqueID;
             if (bi.FormTypeEx == "143" && bi.BeforeAction && bi.EventType == SAPbouiCOM.BoEventTypes.et_FORM_DATA_ADD)
             {
-                HandleAddOrCancelPressed(formUID, ref bubbleEvent);
+                if (type == "20")
+                {
+                    HandleAddOrCancelPressed(formUID, ref bubbleEvent);
+                }
             }
 
             if (bi.FormTypeEx == "143" && !bi.BeforeAction && bi.EventType == SAPbouiCOM.BoEventTypes.et_FORM_DATA_ADD && bi.ActionSuccess)
             {
-                bool success = false;
-                bool isCancel = false;
-                bool isCreate = false;
-                int docEntry = 0;
-                int docNum = 0;
-                Company oCompany = Services.CompanyService.GetCompany();
-
-                try
+                if (type == "20")
                 {
-                    //EnsureCompanyConnected();
+                    bool success = false;
+                    bool isCancel = false;
+                    bool isCreate = false;
+                    int docEntry = 0;
+                    int docNum = 0;
+                    Company oCompany = Services.CompanyService.GetCompany();
+                    SAPbouiCOM.Form oForm = Application.SBO_Application.Forms.ActiveForm;
 
-                    if (!oCompany.InTransaction)
-                        oCompany.StartTransaction();
-
-                    docEntry = ExtractDocEntry(bi.ObjectKey);
-                    var grpo = LoadGRPO(oCompany,docEntry);
-                    docNum = grpo.DocNum;
-
-                    string poType = grpo.UserFields.Fields.Item("U_T2_PO_TYPE").Value?.ToString()?.Trim();
-
-                    if (poType == "4" && grpo.Cancelled == SAPbobsCOM.BoYesNoEnum.tYES)
+                    try
                     {
-                        isCancel = true;
-                        ProcessCancellation(oCompany ,docEntry);
-                    }
-                    else if (poType == "4" && grpo.Cancelled == SAPbobsCOM.BoYesNoEnum.tNO)
-                    {
-                        isCreate = true;
-                        ProcessAutoGeneration(oCompany, docEntry);
-                    }
+                        //EnsureCompanyConnected();
 
-                    success = true;
-                    if (oCompany.InTransaction)
-                        oCompany.EndTransaction(BoWfTransOpt.wf_Commit);
-                }
-                catch (OperationCanceledException)
-                {
-                    if (oCompany?.InTransaction == true)
-                        oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
-                    ShowStatusDelayed("Process cancelled by user.", SAPbouiCOM.BoStatusBarMessageType.smt_Warning);
-                }
-                catch (Exception ex)
-                {
-                    if (oCompany?.InTransaction == true)
-                        oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
-                    HandleAutoGenError(oCompany, ex, docEntry, docNum, isCancel);
-                }
-                finally
-                {
-                    if (success && (isCreate || isCancel))
-                    {
-                        var message = (isCancel) ? "Goods Issue and Goods Receipt were successfully canceled." : "Auto-generation of Goods Issue and Goods Receipt completed successfully.";
-                        ShowStatusDelayed(message, SAPbouiCOM.BoStatusBarMessageType.smt_Success);
-                    }
-                    
-                    if (_lockHelper != null)
-                    {
-                        try
+                        if (!oCompany.InTransaction)
+                            oCompany.StartTransaction();
+
+                        docEntry = ExtractDocEntry(bi.ObjectKey);
+                        var grpo = LoadGRPO(oCompany, docEntry);
+                        docNum = grpo.DocNum;
+
+                        string poType = grpo.UserFields.Fields.Item("U_T2_PO_TYPE").Value?.ToString()?.Trim();
+
+                        if (poType == "4" && grpo.Cancelled == SAPbobsCOM.BoYesNoEnum.tYES)
                         {
-                            _lockHelper.ReleaseLock();
+                            isCancel = true;
+                            ProcessCancellation(oForm, oCompany, docEntry);
                         }
-                        catch (Exception ex)
+                        else if (poType == "4" && grpo.Cancelled == SAPbobsCOM.BoYesNoEnum.tNO)
                         {
-                            Application.SBO_Application.StatusBar.SetText(
-                                $"Error releasing lock: {ex.Message}",
-                                SAPbouiCOM.BoMessageTime.bmt_Short,
-                                SAPbouiCOM.BoStatusBarMessageType.smt_Error
-                            );
+                            isCreate = true;
+                            ProcessAutoGeneration(oForm, oCompany, docEntry);
                         }
-                        finally
-                        {
-                            _lockHelper = null;
-                        }
+
+                        success = true;
+                        if (oCompany.InTransaction)
+                            oCompany.EndTransaction(BoWfTransOpt.wf_Commit);
                     }
-                    _docEntry = 0;
-                    _isCancelTrans = false;
+                    catch (OperationCanceledException)
+                    {
+                        if (oCompany?.InTransaction == true)
+                            oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
+                        ShowStatusDelayed("Process cancelled by user.", SAPbouiCOM.BoStatusBarMessageType.smt_Warning);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (oCompany?.InTransaction == true)
+                            oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
+                        HandleAutoGenError(oCompany, ex, docEntry, docNum, isCancel);
+                    }
+                    finally
+                    {
+                        if (success && (isCreate || isCancel))
+                        {
+                            var message = (isCancel) ? "Goods Issue and Goods Receipt were successfully canceled." : "Auto-generation of Goods Issue and Goods Receipt completed successfully.";
+                            ShowStatusDelayed(message, SAPbouiCOM.BoStatusBarMessageType.smt_Success);
+                        }
+
+                        if (_lockHelper != null)
+                        {
+                            try
+                            {
+                                _lockHelper.ReleaseLock();
+                            }
+                            catch (Exception ex)
+                            {
+                                Application.SBO_Application.StatusBar.SetText(
+                                    $"Error releasing lock: {ex.Message}",
+                                    SAPbouiCOM.BoMessageTime.bmt_Short,
+                                    SAPbouiCOM.BoStatusBarMessageType.smt_Error
+                                );
+                            }
+                            finally
+                            {
+                                _lockHelper = null;
+                            }
+                        }
+                        _docEntry = 0;
+                        _isCancelTrans = false;
+                    }
                 }
             }
         }
@@ -363,14 +402,13 @@ namespace SubconAddOn
             return grpo;
         }
 
-        private static void ProcessCancellation(Company oCompany, int docEntry)
+        private static void ProcessCancellation(SAPbouiCOM.Form oForm, Company oCompany, int docEntry)
         {
-            SAPbouiCOM.ProgressBar progressBar = null;
-            progressBar = Application.SBO_Application.StatusBar.CreateProgressBar("Create cancellation document…", 2, false);
             try
             {
-                progressBar.Value = 1;
-                progressBar.Text = "Creating cancellation Journal Entry Goods Receipt PO Subcontract…";
+                FormHelper.StartLoading(oForm, "Create cancellation document…", 2, false);
+                FormHelper.SetTextValueLoading(oForm, 1, "Creating cancellation Journal Entry Goods Receipt PO Subcontract…");
+                
                 int originEntry = InventoryService.GetOriginGRPOEntry(oCompany, docEntry);
                 if (originEntry == 0)
                     throw new Exception("Origin Goods Receipt PO not found.");
@@ -378,8 +416,7 @@ namespace SubconAddOn
                 InventoryService.DeleteAllRefGRPO(oCompany, docEntry);
                 InventoryService.CancelJEByGRPO(oCompany, originEntry, docEntry);
 
-                progressBar.Value = 2;
-                progressBar.Text = "Creating cancellation Goods Issue & Goods Receipt…";
+                FormHelper.SetTextValueLoading(oForm, 2, "Creating cancellation Goods Issue & Goods Receipt…");
                 
                 InventoryService.CancelGIGRByGRPO(oCompany, originEntry, docEntry);
             }
@@ -390,33 +427,29 @@ namespace SubconAddOn
             }
             finally
             {
-                CleanupProgressBar(progressBar);
+                FormHelper.FinishLoading(oForm);
             }
         }
 
-        private static void ProcessAutoGeneration(Company oCompany, int docEntry)
+        private static void ProcessAutoGeneration(SAPbouiCOM.Form oForm, Company oCompany, int docEntry)
         {
-            SAPbouiCOM.ProgressBar progressBar = null;
-            progressBar = Application.SBO_Application.StatusBar.CreateProgressBar("Auto‑generate Goods Issue & Goods Receipt…", 4, false);
             try
             {
+                FormHelper.StartLoading(oForm, "Starting auto‑generate document…", 4, false);
                 // Step 1: JE
-                progressBar.Value = 1;
-                progressBar.Text = "Creating Journal Entry Subcon…";
+                FormHelper.SetTextValueLoading(oForm, 1, "Creating Journal Entry Subcontract…");
                 int entryJe = InventoryService.CreateJESubcon(oCompany, docEntry);
                 if (entryJe == 0) throw new Exception("Journal Entry Subcon fail to create.");
 
                 // Step 2: Link JE
-                progressBar.Value = 2;
-                progressBar.Text = "Linking Journal Entry Subcon to Goods Receipt PO…";
-                
+                FormHelper.SetTextValueLoading(oForm, 2, "Linking Journal Entry Subcontract to Goods Receipt PO…");
+
                 if (!InventoryService.LinkJEToGRPO(oCompany, docEntry, entryJe))
-                    throw new Exception("Journal Entry Subcon fail to link with Goods Receipt PO.");
+                    throw new Exception("Journal Entry Subcontract fail to link with Goods Receipt PO.");
 
                 // Step 3: Goods Issue
-                progressBar.Value = 3;
-                progressBar.Text = "Creating Goods Issue…";
-                
+                FormHelper.SetTextValueLoading(oForm, 3, "Creating Goods Issue…");
+
                 var resGi = InventoryService.GetGoodIssueByGRPO(oCompany, docEntry);
                 int giDocEntry = InventoryService.CreateGoodsIssue(oCompany, resGi);
                 if (resGi != null && giDocEntry == 0)
@@ -425,9 +458,8 @@ namespace SubconAddOn
                     throw new Exception("Goods Issue fail to link with Goods Receipt PO.");
 
                 // Step 4: Goods Receipt
-                progressBar.Value = 4;
-                progressBar.Text = "Creating Goods Receipt…";
-                
+                FormHelper.SetTextValueLoading(oForm, 4, "Creating Goods Receipt…");
+
                 var resGr = InventoryService.GetGoodReceiptByGRPO(oCompany, docEntry, giDocEntry);
                 int grDocEntry = InventoryService.CreateGoodsReceipt(oCompany, resGr);
                 if (resGr != null && grDocEntry == 0)
@@ -442,26 +474,26 @@ namespace SubconAddOn
             }
             finally
             {
-                CleanupProgressBar(progressBar);
+                FormHelper.FinishLoading(oForm);
             }
         }
 
         private static void HandleAutoGenError(Company oCompany, Exception ex, int docEntry, int docNum, bool isCancel)
         {
-            ShowStatusDelayed("Auto-generation of Goods Issue and Goods Receipt failed: " + ex.Message,
+            ShowStatusDelayed("Auto-generation of documents failed: " + ex.Message,
                 SAPbouiCOM.BoStatusBarMessageType.smt_Error);
 
             if (!isCancel)
             {
                 InventoryService.CancelGoodsReceiptPO(oCompany, docEntry);
                 Application.SBO_Application.MessageBox(
-                    $"Auto-generation of Goods Issue and Goods Receipt failed.\n\nError:\n{ex.Message}\n\nThe Goods Receipt PO ({docNum}) has been canceled.",
+                    $"Auto-generation of documents failed.\n\nError:\n{ex.Message}\n\nThe Goods Receipt PO ({docNum}) has been canceled.",
                     1, "OK", "", "");
             }
             else
             {
                 Application.SBO_Application.MessageBox(
-                    "Auto-cancellation of Goods Issue and Goods Receipt failed.\nPlease cancel them manually.",
+                    "Auto-cancellation of documents failed.\nPlease cancel them manually.",
                     1, "OK", "", "");
             }
         }
@@ -470,21 +502,9 @@ namespace SubconAddOn
         {
             new System.Threading.Timer(_ =>
             {
-                Application.SBO_Application.StatusBar.SetText(text, SAPbouiCOM.BoMessageTime.bmt_Long, type);
-            }, null, 1000, System.Threading.Timeout.Infinite);
+                Application.SBO_Application.StatusBar.SetText(text, SAPbouiCOM.BoMessageTime.bmt_Short, type);
+            }, null, 500, System.Threading.Timeout.Infinite);
         }
-
-        //private static void EnsureCompanyConnected()
-        //{
-        //    if (oCompany == null || !oCompany.Connected)
-        //        oCompany = Services.CompanyService.GetCompany();
-        //}
-
-        //private static void RollbackTransaction()
-        //{
-        //    if (oCompany?.InTransaction == true)
-        //        oCompany.EndTransaction(BoWfTransOpt.wf_RollBack);
-        //}
 
         private static void SBO_Application_MenuEvent(ref SAPbouiCOM.MenuEvent pVal, out bool BubbleEvent)
         {
@@ -511,14 +531,8 @@ namespace SubconAddOn
         
         private static void CleanExit()
         {
-            //oCompany = Services.CompanyService.GetCompany();
-            //if (oCompany != null && oCompany.Connected)
-            //{
-            //    oCompany.Disconnect();
-            //    Marshal.ReleaseComObject(oCompany);
-            //}
             Application.SBO_Application.StatusBar.SetText(
-            "Subcon Add-on (Goods Issue - Goods Receipt auto-generation) has been unloaded.",
+            "Subcontract Add-On has been unloaded.",
             SAPbouiCOM.BoMessageTime.bmt_Short,
             SAPbouiCOM.BoStatusBarMessageType.smt_Warning);
             System.Environment.Exit(0);
